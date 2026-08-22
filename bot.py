@@ -16,7 +16,6 @@ def home():
 
 MODELS = [
     "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
 ]
 
 def ask_groq(prompt):
