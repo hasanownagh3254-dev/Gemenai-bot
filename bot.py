@@ -4,8 +4,8 @@ import telebot
 import requests
 from flask import Flask
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -14,7 +14,6 @@ app = Flask(__name__)
 def home():
     return "Bot is active 24/7!"
 
-# مدل‌های قدرتمند و سریع Groq
 MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
@@ -22,8 +21,11 @@ MODELS = [
 ]
 
 def ask_groq(prompt):
+    # چاپ طول کلید در لاگ‌ها برای اطمینان از خوانده شدن متغیر
+    print(f"DEBUG: Loaded API Key length = {len(GROQ_API_KEY)}")
+    
     if not GROQ_API_KEY:
-        return "خطا: کلید GROQ_API_KEY در قسمت Environment پنل Render وارد نشده است."
+        return "خطا: متغیر GROQ_API_KEY روی سرور Render یافت نشد یا خالی است."
 
     headers = {
         "Content-Type": "application/json",
@@ -36,9 +38,7 @@ def ask_groq(prompt):
     for model in MODELS:
         payload = {
             "model": model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
+            "messages": [{"role": "user", "content": prompt}]
         }
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=15)
