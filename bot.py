@@ -5,7 +5,7 @@ import requests
 from flask import Flask
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -14,34 +14,38 @@ app = Flask(__name__)
 def home():
     return "Bot is active 24/7!"
 
+# مدل‌های قدرتمند و سریع Groq
 MODELS = [
-    "gemini-flash-latest",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash"
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768"
 ]
 
-def ask_gemini(prompt):
-    if not GEMINI_API_KEY:
-        return "خطا: کلید GEMINI_API_KEY در قسمت Environment پنل Render وارد نشده است."
+def ask_groq(prompt):
+    if not GROQ_API_KEY:
+        return "خطا: کلید GROQ_API_KEY در قسمت Environment پنل Render وارد نشده است."
 
-    # بر اساس cURL رسمی گوگل، کلید حتماً باید در هدر ارسال شود
     headers = {
         "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY
+        "Authorization": f"Bearer {GROQ_API_KEY}"
     }
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
     
     last_error = ""
     for model in MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=15)
             data = response.json()
             
-            if response.status_code == 200 and "candidates" in data and len(data["candidates"]) > 0:
-                parts = data["candidates"][0].get("content", {}).get("parts", [])
-                if parts and "text" in parts[0]:
-                    return parts[0]["text"]
+            if response.status_code == 200 and "choices" in data and len(data["choices"]) > 0:
+                return data["choices"][0]["message"]["content"]
             else:
                 err_msg = data.get("error", {}).get("message", response.text)
                 last_error = f"مدل {model} (کد {response.status_code}): {err_msg}"
@@ -49,12 +53,12 @@ def ask_gemini(prompt):
             last_error = f"خطای ارتباطی: {str(e)}"
             continue
 
-    return f"خطا در دریافت پاسخ از گوگل:\n{last_error}"
+    return f"خطا در دریافت پاسخ از Groq:\n{last_error}"
 
 @bot.message_handler(func=lambda message: True)
 def answer(message):
     try:
-        reply_text = ask_gemini(message.text)
+        reply_text = ask_groq(message.text)
         bot.reply_to(message, reply_text)
     except Exception as e:
         bot.reply_to(message, f"System Error: {str(e)}")
