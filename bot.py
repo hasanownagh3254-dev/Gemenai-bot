@@ -14,8 +14,9 @@ app = Flask(__name__)
 def home():
     return "Bot is active 24/7!"
 
-MODELS = [
-    "llama-3.3-70b-versatile",
+    MODELS = [
+    "llama-3.3-70b-versatile"
+]
 ]
 
 def ask_groq(prompt):
