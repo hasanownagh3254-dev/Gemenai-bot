@@ -4,7 +4,6 @@ import telebot
 import requests
 from flask import Flask
 
-# دریافت توکن‌ها از متغیرهای محیطی سرور
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -22,26 +21,31 @@ MODELS = [
 ]
 
 def ask_gemini(prompt):
-    headers = {
-        "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY
-    }
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
+    if not GEMINI_API_KEY:
+        return "خطا: کلید GEMINI_API_KEY در قسمت Environment پنل Render وارد نشده است."
+
+    headers = {"Content-Type": "application/json"}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
+    last_error = ""
     for model in MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=15)
             data = response.json()
-            if "candidates" in data and len(data["candidates"]) > 0:
+            
+            if response.status_code == 200 and "candidates" in data and len(data["candidates"]) > 0:
                 parts = data["candidates"][0].get("content", {}).get("parts", [])
                 if parts and "text" in parts[0]:
                     return parts[0]["text"]
-        except Exception:
+            else:
+                err_msg = data.get("error", {}).get("message", response.text)
+                last_error = f"مدل {model} (کد {response.status_code}): {err_msg}"
+        except Exception as e:
+            last_error = f"خطای ارتباطی: {str(e)}"
             continue
-    return "خطا در دریافت پاسخ از گوگل. لطفاً تنظیمات را بررسی کنید."
+
+    return f"خطا در دریافت پاسخ از گوگل:\n{last_error}"
 
 @bot.message_handler(func=lambda message: True)
 def answer(message):
