@@ -15,21 +15,25 @@ def home():
     return "Bot is active 24/7!"
 
 MODELS = [
+    "gemini-flash-latest",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-1.5-flash"
 ]
 
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
         return "خطا: کلید GEMINI_API_KEY در قسمت Environment پنل Render وارد نشده است."
 
-    headers = {"Content-Type": "application/json"}
+    # بر اساس cURL رسمی گوگل، کلید حتماً باید در هدر ارسال شود
+    headers = {
+        "Content-Type": "application/json",
+        "X-goog-api-key": GEMINI_API_KEY
+    }
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
     last_error = ""
     for model in MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=15)
             data = response.json()
