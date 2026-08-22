@@ -5,7 +5,7 @@ import requests
 from flask import Flask
 
 TELEGRAM_TOKEN = "8764118938:AAERKImEtZ5zT2JYFLmIBGSNOg5ynSQP4CI"
-GEMINI_API_KEY = "AQ.Ab8RN6KksS0Ol06rjL4ZXZ785fTNUlopkjjVkyAKYlLhFbRBTA"
+GEMINI_API_KEY = "AQ.Ab8RN6IozEpYOYGMdGE4L1C0dxKPgwQ8jTrgttLYfM_INGHWDg"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -15,10 +15,9 @@ def home():
     return "Bot is active 24/7!"
 
 MODELS = [
-    "gemini-3.5-flash",
-    "gemini-2.5-flash",
-    "gemini-flash-latest",
-    "gemini-2.0-flash"
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
 ]
 
 def ask_gemini(prompt):
@@ -30,17 +29,18 @@ def ask_gemini(prompt):
         "contents": [{"parts": [{"text": prompt}]}]
     }
     
-    for attempt in range(2):
-        for model in MODELS:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            try:
-                response = requests.post(url, json=payload, headers=headers, timeout=15)
-                data = response.json()
-                if "candidates" in data:
-                    return data["candidates"][0]["content"]["parts"][0]["text"]
-            except Exception:
-                continue
-    return "سرورهای گوگل در حال حاضر بسیار شلوغ هستند. لطفاً چند ثانیه دیگر دوباره پیام بفرستید."
+    for model in MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=15)
+            data = response.json()
+            if "candidates" in data and len(data["candidates"]) > 0:
+                parts = data["candidates"][0].get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"]
+        except Exception:
+            continue
+    return "خطا در دریافت پاسخ از گوگل. لطفاً تنظیمات را بررسی کنید."
 
 @bot.message_handler(func=lambda message: True)
 def answer(message):
@@ -60,4 +60,4 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-  
+    
