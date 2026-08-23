@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import threading
 import base64
@@ -39,7 +40,8 @@ def ask_groq(prompt):
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 1024
+        "max_tokens": 1024,
+        "reasoning_format": "hidden"  # Ø¬Ù„ÙˆÚ¯ÛŒØ±ÛŒ Ø§Ø² Ù†Ù…Ø§ÛŒØ´ ØªÚ¯ <think> Ø¯Ø± Ø¬ÙˆØ§Ø¨
     }
 
     try:
@@ -80,7 +82,9 @@ def ask_groq_vision(image_bytes, prompt="Ø§ÛŒÙ† ØªØµÙˆÛŒØ± Ø±
             }
         ],
         "temperature": 0.7,
-        "max_tokens": 1024
+        "max_tokens": 1024,
+        "reasoning_format": "hidden",  # Ø¬Ù„ÙˆÚ¯ÛŒØ±ÛŒ Ø§Ø² Ù†Ù…Ø§ÛŒØ´ ØªÚ¯ <think> Ø¯Ø± Ø¬ÙˆØ§Ø¨
+        "reasoning_effort": "none"     # Ø®Ø§Ù…ÙˆØ´ Ú©Ø±Ø¯Ù† Ú©Ø§Ù…Ù„ Ø­Ø§Ù„Øª ÙÚ©Ø± Ú©Ø±Ø¯Ù† Ø¨Ø±Ø§ÛŒ Ù…Ø¯Ù„ qwen3
     }
 
     try:
@@ -95,7 +99,35 @@ def ask_groq_vision(image_bytes, prompt="Ø§ÛŒÙ† ØªØµÙˆÛŒØ± Ø±
     except Exception as e:
         return f"âŒ Ø®Ø·Ø§ÛŒ Ø§Ø±ØªØ¨Ø§Ø·ÛŒ: {str(e)}"
 
-# Û´. Ø¯Ø±ÛŒØ§ÙØª Ùˆ Ù¾Ø§Ø³Ø® Ø¨Ù‡ Ø¹Ú©Ø³â€ŒÙ‡Ø§ (Ø¨Ø§ÛŒØ¯ Ù‚Ø¨Ù„ Ø§Ø² Ù‡Ù†Ø¯Ù„Ø± Ù…ØªÙ†ÛŒ Ø¹Ù…ÙˆÙ…ÛŒ ØªØ¹Ø±ÛŒÙ Ø´ÙˆØ¯)
+# Û´. ØªØ§Ø¨Ø¹ Ú©Ù…Ú©ÛŒ Ø¨Ø±Ø§ÛŒ ØªÙ‚Ø³ÛŒÙ… Ù¾ÛŒØ§Ù…â€ŒÙ‡Ø§ÛŒ Ø·ÙˆÙ„Ø§Ù†ÛŒ (Ù…Ø­Ø¯ÙˆØ¯ÛŒØª ØªÙ„Ú¯Ø±Ø§Ù…: Û´Û°Û¹Û¶ Ú©Ø§Ø±Ø§Ú©ØªØ±)
+TELEGRAM_MAX_LEN = 4000  # Ú©Ù…ÛŒ Ú©Ù…ØªØ± Ø§Ø² Û´Û°Û¹Û¶ Ø¨Ø±Ø§ÛŒ Ø§Ø·Ù…ÛŒÙ†Ø§Ù†
+
+def clean_text(text):
+    if not text:
+        return text
+    # Ø­Ø°Ù ØªÚ¯â€ŒÙ‡Ø§ÛŒ <think>...</think> Ø¨Ø§Ù‚ÛŒÙ…Ø§Ù†Ø¯Ù‡ (Ø§Ú¯Ø± Ù…Ø¯Ù„ Ø¨Ø§ ÙˆØ¬ÙˆØ¯ reasoning_format Ù‡Ù… Ø¨ÙØ±Ø³ØªÙ‡)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"</?think>", "", text)
+    # Ø­Ø°Ù Ù†Ø´Ø§Ù†Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ø§Ø±Ú©â€ŒØ¯Ø§ÙˆÙ† Ú©Ù‡ ØªÙ„Ú¯Ø±Ø§Ù… Ø¨Ø¯ÙˆÙ† parse_mode Ø±Ù†Ø¯Ø±Ø´ÙˆÙ† Ù†Ù…ÛŒâ€ŒÚ©Ù†Ù‡
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"^[ \t]*[\*\-][ \t]+", "â€¢ ", text, flags=re.MULTILINE)
+    text = re.sub(r"^#{1,6}[ \t]*", "", text, flags=re.MULTILINE)
+    return text.strip()
+
+def send_long_message(message, text):
+    text = clean_text(text)
+    if not text:
+        text = "(Ù¾Ø§Ø³Ø®ÛŒ Ø¯Ø±ÛŒØ§ÙØª Ù†Ø´Ø¯)"
+
+    chunks = [text[i:i + TELEGRAM_MAX_LEN] for i in range(0, len(text), TELEGRAM_MAX_LEN)]
+
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            bot.reply_to(message, chunk)
+        else:
+            bot.send_message(message.chat.id, chunk)
+
+# Ûµ. Ø¯Ø±ÛŒØ§ÙØª Ùˆ Ù¾Ø§Ø³Ø® Ø¨Ù‡ Ø¹Ú©Ø³â€ŒÙ‡Ø§ (Ø¨Ø§ÛŒØ¯ Ù‚Ø¨Ù„ Ø§Ø² Ù‡Ù†Ø¯Ù„Ø± Ù…ØªÙ†ÛŒ Ø¹Ù…ÙˆÙ…ÛŒ ØªØ¹Ø±ÛŒÙ Ø´ÙˆØ¯)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     try:
@@ -108,12 +140,15 @@ def handle_photo(message):
         user_prompt = message.caption if message.caption else "Ø§ÛŒÙ† ØªØµÙˆÛŒØ± Ø±Ø§ ØªÙˆØµÛŒÙ Ú©Ù†."
 
         reply = ask_groq_vision(downloaded_file, user_prompt)
-        bot.reply_to(message, reply)
+        send_long_message(message, reply)
     except Exception as e:
         print(f"Error handling photo: {e}")
-        bot.reply_to(message, f"âŒ Ø®Ø·Ø§ Ø¯Ø± Ù¾Ø±Ø¯Ø§Ø²Ø´ Ø¹Ú©Ø³: {str(e)}")
+        try:
+            bot.reply_to(message, f"âŒ Ø®Ø·Ø§ Ø¯Ø± Ù¾Ø±Ø¯Ø§Ø²Ø´ Ø¹Ú©Ø³: {str(e)}")
+        except Exception:
+            pass
 
-# Ûµ. Ø¯Ø±ÛŒØ§ÙØª Ùˆ Ù¾Ø§Ø³Ø® Ø¨Ù‡ Ù¾ÛŒØ§Ù…â€ŒÙ‡Ø§ÛŒ Ù…ØªÙ†ÛŒ
+# Û¶. Ø¯Ø±ÛŒØ§ÙØª Ùˆ Ù¾Ø§Ø³Ø® Ø¨Ù‡ Ù¾ÛŒØ§Ù…â€ŒÙ‡Ø§ÛŒ Ù…ØªÙ†ÛŒ
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     if not message.text:
@@ -122,11 +157,11 @@ def handle_message(message):
     try:
         bot.send_chat_action(message.chat.id, "typing")
         reply = ask_groq(message.text)
-        bot.reply_to(message, reply)
+        send_long_message(message, reply)
     except Exception as e:
         print(f"Error handling message: {e}")
 
-# Û¶. Ø§Ø¬Ø±Ø§ÛŒ Ø±Ø¨Ø§Øª ØªÙ„Ú¯Ø±Ø§Ù… Ø¨Ù‡ ØµÙˆØ±Øª Ø§ÛŒÙ…Ù† Ùˆ Ø®ÙˆØ¯Ú©Ø§Ø±
+# Û·. Ø§Ø¬Ø±Ø§ÛŒ Ø±Ø¨Ø§Øª ØªÙ„Ú¯Ø±Ø§Ù… Ø¨Ù‡ ØµÙˆØ±Øª Ø§ÛŒÙ…Ù† Ùˆ Ø®ÙˆØ¯Ú©Ø§Ø±
 def run_telegram_bot():
     print("Ø´Ø±ÙˆØ¹ Ø³ÛŒØ³ØªÙ… Ø¨Ø§Ø²ÛŒØ§Ø¨ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø± Ø±Ø¨Ø§Øª...")
     while True:
