@@ -12,15 +12,14 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# مدل اختصاصی Groq
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-# ۲. وب‌سرور برای زنده نگه داشتن سرور در Render
+# ۲. وب‌سرور Flask برای زنده نگه داشتن سرور Render
 @app.route("/")
 def home():
     return "Bot is running 24/7!", 200
 
-# ۳. ارسال درخواست به Groq
+# ۳. ارسال درخواست به API مدل Groq
 def ask_groq(prompt):
     if not GROQ_API_KEY:
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
@@ -66,14 +65,19 @@ def handle_message(message):
     except Exception as e:
         print(f"Error handling message: {e}")
 
-# ۵. اجرای ربات با حلقه‌ی بازیابی خودکار (ضد کرش و ضد تداخل ۴۰۹)
+# ۵. اجرای ربات تلگرام به صورت ایمن و خودکار
 def run_telegram_bot():
     print("شروع سیستم بازیابی خودکار ربات...")
     while True:
         try:
-            bot.remove_webhook(drop_pending_updates=True)
-            time.sleep(2)
-            print("اتصال ربات به تلگرام برقرار شد.")
+            # پاکسازی وب‌هوک به روش استاندارد و بدون پارامترهای ناسازگار
+            try:
+                bot.remove_webhook()
+            except Exception as e:
+                print(f"Webhook removal note: {e}")
+
+            time.sleep(1)
+            print("اتصال ربات به تلگرام برقرار شد. در حال گوش دادن به پیام‌ها...")
             bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20)
         except Exception as e:
             print(f"خطای موقت در اتصال ({e}). تلاش مجدد تا ۵ ثانیه دیگر...")
