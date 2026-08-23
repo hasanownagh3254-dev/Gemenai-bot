@@ -5,14 +5,14 @@ import requests
 import telebot
 from flask import Flask
 
-# ۱. دریافت کلیدها از متغیرهای محیطی
+# ۱. دریافت کلیدها از Environment
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# تنها مدل مورد استفاده
+# مدل اختصاصی Groq
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 # ۲. وب‌سرور برای زنده نگه داشتن سرور در Render
@@ -20,7 +20,7 @@ MODEL_NAME = "llama-3.3-70b-versatile"
 def home():
     return "Bot is running 24/7!", 200
 
-# ۳. ارسال درخواست به Groq (بدون حلقه و آرایه)
+# ۳. ارسال درخواست به Groq
 def ask_groq(prompt):
     if not GROQ_API_KEY:
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
@@ -34,7 +34,7 @@ def ask_groq(prompt):
     payload = {
         "model": MODEL_NAME,
         "messages": [
-            {"role": "system", "content": "You are a helpful and smart AI assistant. Answer clearly and accurately."},
+            {"role": "system", "content": "You are a helpful AI assistant. Answer clearly and accurately."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -66,17 +66,18 @@ def handle_message(message):
     except Exception as e:
         print(f"Error handling message: {e}")
 
-# ۵. اجرای ربات تلگرام و رفع تداخلات
+# ۵. اجرای ربات با حلقه‌ی بازیابی خودکار (ضد کرش و ضد تداخل ۴۰۹)
 def run_telegram_bot():
-    print("در حال پاکسازی اتصالات قبلی...")
-    try:
-        bot.remove_webhook(drop_pending_updates=True)
-        time.sleep(2)
-    except Exception as e:
-        print(f"Webhook cleanup note: {e}")
-
-    print("ربات تلگرام با موفقیت روشن شد!")
-    bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20)
+    print("شروع سیستم بازیابی خودکار ربات...")
+    while True:
+        try:
+            bot.remove_webhook(drop_pending_updates=True)
+            time.sleep(2)
+            print("اتصال ربات به تلگرام برقرار شد.")
+            bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20)
+        except Exception as e:
+            print(f"خطای موقت در اتصال ({e}). تلاش مجدد تا ۵ ثانیه دیگر...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
