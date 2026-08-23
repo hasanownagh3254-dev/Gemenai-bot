@@ -12,7 +12,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-MODEL_NAME = "llama-3.3-70b-versatile"
+MODEL_NAME = "openai/gpt-oss-20b"
 
 # ۲. وب‌سرور Flask برای زنده نگه داشتن سرور Render
 @app.route("/")
@@ -89,4 +89,3 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
