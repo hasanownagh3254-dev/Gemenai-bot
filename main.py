@@ -51,7 +51,8 @@ BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 # یوزرنیم کانال‌هایی که کاربر باید عضوشون باشه (بدون @ ولی با @ هم کار می‌کنه، کد خودش مدیریت می‌کنه)
 # نکته مهم: ربات باید در همه‌ی این کانال‌ها ادمین باشه، وگرنه نمی‌تونه وضعیت عضویت رو چک کنه.
 REQUIRED_CHANNELS = [
-    "@WiseGPTbotChannel",   # <-- اینجا یوزرنیم کانال اول خودت رو بذار
+    "@your_channel_1",   # <-- اینجا یوزرنیم کانال اول خودت رو بذار
+    "@your_channel_2",   # <-- اگه کانال دوم هم داری، اینجا؛ وگرنه این خط رو پاک کن
 ]
 
 CALLBACK_CHECK_JOIN = "check_join"
@@ -85,10 +86,20 @@ def trim_history(chat_id):
 
 
 def main_menu_keyboard():
+    """
+    دکمه‌های منوی اصلی رو خودکار می‌چینه تا با اضافه شدن قابلیت جدید، منو
+    به‌جای طولانی و عمودی شدن، فشرده بمونه:
+    - تا ۴ دکمه: دو ستون (دوتا-دوتا)
+    - از ۵ دکمه به بالا: سه ستون (سه‌تا-سه‌تا) تا فضای کمتری بگیره
+    اگه تعداد دکمه‌ها بخش‌پذیر نباشه، آخرین ردیف با تعداد کمتر پر می‌شه.
+    """
+    buttons = [BTN_SEARCH, BTN_START_CHAT, BTN_IMAGE]  # هر قابلیت جدید رو همینجا اضافه کن
+    columns = 3 if len(buttons) >= 5 else 2
+
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.row(types.KeyboardButton(BTN_SEARCH))
-    keyboard.row(types.KeyboardButton(BTN_START_CHAT))
-    keyboard.row(types.KeyboardButton(BTN_IMAGE))
+    for i in range(0, len(buttons), columns):
+        row = buttons[i:i + columns]
+        keyboard.row(*[types.KeyboardButton(b) for b in row])
     return keyboard
 
 
