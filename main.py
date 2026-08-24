@@ -25,7 +25,9 @@ STT_MODEL_NAME = "whisper-large-v3-turbo"  # مدل تبدیل ویس به مت�
 
 # مدل Gemini برای قابلیت‌های سرچ، خواندن سند، و تحلیل ویدیو
 # "gemini-flash-latest" یک alias است که همیشه به آخرین نسخه‌ی پایدار Flash گوگل اشاره می‌کنه
-GEMINI_MODEL = "gemini-flash-latest"
+# "gemini-flash-latest" گاهی به مدل‌های preview/تجربی با تقاضای بالا و خطای ۵۰۳ اشاره می‌کنه؛
+# gemini-2.5-flash پایدار و کمتر دچار این مشکل می‌شه.
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # مدل‌های قابل انتخاب برای حالت گفتگو — با زدن «شروع گفتگو» کاربر از بین این‌ها انتخاب می‌کنه
 # نکته: مدل‌های groq/compound و groq/compound-mini (که خودشون سرچ می‌کردن) به‌خاطر
@@ -324,35 +326,53 @@ def transcribe_voice(audio_bytes, filename="voice.ogg"):
 
 
 # ۳د. تابع کمکی برای فراخوانی امن API جمنای (Google AI Studio)
-def call_gemini_api(payload, timeout=60):
+def call_gemini_api(payload, timeout=60, max_retries=2):
     if not GEMINI_API_KEY:
         return "❌ خطا: متغیر GEMINI_API_KEY در Render تنظیم نشده است."
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        response.encoding = "utf-8"
-        data = json.loads(response.text)
-    except Exception as e:
-        return f"❌ خطای ارتباطی: {str(e)}"
-
-    if response.status_code == 200:
+    last_error_text = None
+    for attempt in range(max_retries + 1):
         try:
-            candidates = data.get("candidates", [])
-            if not candidates:
-                return "(پاسخی دریافت نشد — احتمالاً محتوا توسط فیلترهای ایمنی گوگل رد شده)"
-            parts = candidates[0].get("content", {}).get("parts", [])
-            text = "".join(p.get("text", "") for p in parts).strip()
-            return text if text else "(پاسخی دریافت نشد)"
-        except Exception:
-            return "❌ خطا در پردازش پاسخ Gemini."
-    elif response.status_code == 429:
-        return "❌ سرویس Gemini موقتاً شلوغه (محدودیت نرخ رایگان). چند لحظه صبر کن و دوباره امتحان کن."
-    else:
-        err_msg = data.get("error", {}).get("message", response.text)
-        return f"❌ خطای Gemini (کد {response.status_code}): {err_msg}"
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response.encoding = "utf-8"
+            data = json.loads(response.text)
+        except Exception as e:
+            return f"❌ خطای ارتباطی: {str(e)}"
+
+        if response.status_code == 200:
+            try:
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return "(پاسخی دریافت نشد — احتمالاً محتوا توسط فیلترهای ایمنی گوگل رد شده)"
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = "".join(p.get("text", "") for p in parts).strip()
+                return text if text else "(پاسخی دریافت نشد)"
+            except Exception:
+                return "❌ خطا در پردازش پاسخ Gemini."
+
+        elif response.status_code == 429:
+            err_msg = data.get("error", {}).get("message", response.text)
+            print(f"Gemini 429 detail: {err_msg}")
+            return (
+                "❌ سرویس Gemini موقتاً شلوغه (محدودیت نرخ رایگان). چند لحظه صبر کن و دوباره امتحان کن.\n"
+                f"جزئیات فنی: {err_msg}"
+            )
+
+        elif response.status_code in (503, 500) and attempt < max_retries:
+            # خطای موقتی سمت گوگل (شلوغی سرویس) — چند ثانیه صبر و تلاش مجدد
+            last_error_text = data.get("error", {}).get("message", response.text)
+            print(f"Gemini {response.status_code} — retry {attempt + 1}/{max_retries}: {last_error_text}")
+            time.sleep(3)
+            continue
+
+        else:
+            err_msg = data.get("error", {}).get("message", response.text)
+            return f"❌ خطای Gemini (کد {response.status_code}): {err_msg}"
+
+    return f"❌ سرویس Gemini بعد از چند تلاش هم پاسخ نداد (شلوغی موقت سرویس). چند دقیقه دیگه دوباره امتحان کن.\nجزئیات: {last_error_text}"
 
 
 # ۳ه. سرچ واقعی در وب با قابلیت Google Search Grounding
