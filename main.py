@@ -18,11 +18,20 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# مدل گفتگوی عادی: groq/compound-mini خودش تشخیص می‌ده کِی نیاز به جستجوی وب داره
-# (اخبار، قیمت، نسخه‌ی جدید، نتیجه‌ی بازی، و...) و خودکار سرچ می‌کنه، بدون نیاز به دکمه‌ی جدا.
-MODEL_NAME = "groq/compound-mini"
+# مدل گفتگوی عادی (پیش‌فرض، اگه کاربر مدلی انتخاب نکرده باشه)
 VISION_MODEL_NAME = "qwen/qwen3.6-27b"  # مدل ویژن Groq برای پردازش عکس
 STT_MODEL_NAME = "whisper-large-v3-turbo"  # مدل تبدیل ویس به متن (چندزبانه، فارسی هم پشتیبانی می‌کنه)
+
+# مدل‌های قابل انتخاب برای حالت گفتگو — با زدن «شروع گفتگو» کاربر از بین این‌ها انتخاب می‌کنه
+CHAT_MODEL_OPTIONS = [
+    {"id": "openai/gpt-oss-20b", "label": "⚡ سریع", "desc": "پاسخ‌گویی سریع برای گفتگوی روزمره"},
+    {"id": "groq/compound-mini", "label": "🔎 هوشمند + سرچ", "desc": "خودش وقت نیاز باشه توی وب سرچ می‌کنه"},
+    {"id": "openai/gpt-oss-120b", "label": "🧠 قوی‌تر", "desc": "مدل بزرگ‌تر برای سوال‌های پیچیده‌تر"},
+]
+DEFAULT_CHAT_MODEL = CHAT_MODEL_OPTIONS[0]["id"]
+
+# مدل انتخابی هر چت (chat_id -> model_id)
+CHAT_MODEL_CHOICE = {}
 
 SYSTEM_PROMPT = (
     "You are a helpful AI assistant that answers in the user's language (mostly Persian). "
@@ -40,6 +49,8 @@ BTN_STT = "🎙 ویس به متن"
 BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 BTN_END_STT = "🔴 پایان ویس به متن"
+
+CALLBACK_SELECT_MODEL_PREFIX = "selmodel:"
 
 # ==== تنظیمات عضویت اجباری ====
 # یوزرنیم کانال‌هایی که کاربر باید عضوشون باشه (بدون @ ولی با @ هم کار می‌کنه، کد خودش مدیریت می‌کنه)
@@ -194,17 +205,22 @@ def ask_groq(chat_id, prompt):
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
 
     history = get_history(chat_id)
+    model_id = CHAT_MODEL_CHOICE.get(chat_id, DEFAULT_CHAT_MODEL)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
     payload = {
-        "model": MODEL_NAME,
+        "model": model_id,
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 1024
     }
+    # مدل‌های خانواده‌ی gpt-oss از reasoning_format پشتیبانی می‌کنن (برای مخفی کردن تگ <think>)
+    # مدل‌های compound این پارامتر رو لازم ندارن.
+    if "gpt-oss" in model_id:
+        payload["reasoning_format"] = "hidden"
 
     try:
         reply = call_groq_api(payload, timeout=45)
@@ -345,18 +361,52 @@ def handle_reset(message):
     bot.reply_to(message, "✅ حافظه مکالمه پاک شد.")
 
 
-# ۷. دکمه «شروع گفتگو»
+# ۷. دکمه «شروع گفتگو» — اول منوی انتخاب مدل رو نشون می‌ده
 @bot.message_handler(func=lambda message: message.text == BTN_START_CHAT)
 def handle_start_chat_button(message):
     if not check_membership_and_notify(message):
         return
 
     chat_id = message.chat.id
-    set_mode(chat_id, "chat")
-    CONVERSATION_HISTORY[chat_id] = []  # شروع تازه
+    keyboard = types.InlineKeyboardMarkup()
+    for option in CHAT_MODEL_OPTIONS:
+        button_text = f"{option['label']} — {option['desc']}"
+        keyboard.add(types.InlineKeyboardButton(button_text, callback_data=CALLBACK_SELECT_MODEL_PREFIX + option["id"]))
+
     bot.send_message(
         chat_id,
-        "✅ گفتگو شروع شد! هر سوالی داری بپرس یا عکس بفرست.\nبرای پایان دادن، دکمه‌ی «پایان گفتگو» رو بزن.",
+        "با کدوم مدل می‌خوای گفتگو کنی؟ 👇",
+        reply_markup=keyboard
+    )
+
+
+# ۷ب. انتخاب مدل از منوی شیشه‌ای بالا
+@bot.callback_query_handler(func=lambda call: call.data.startswith(CALLBACK_SELECT_MODEL_PREFIX))
+def handle_select_model(call):
+    model_id = call.data[len(CALLBACK_SELECT_MODEL_PREFIX):]
+    chat_id = call.message.chat.id
+
+    # اطمینان از معتبر بودن مدل انتخابی
+    valid_ids = [option["id"] for option in CHAT_MODEL_OPTIONS]
+    if model_id not in valid_ids:
+        bot.answer_callback_query(call.id, "❌ مدل نامعتبر.", show_alert=True)
+        return
+
+    CHAT_MODEL_CHOICE[chat_id] = model_id
+    set_mode(chat_id, "chat")
+    CONVERSATION_HISTORY[chat_id] = []  # شروع تازه
+
+    model_label = next(o["label"] for o in CHAT_MODEL_OPTIONS if o["id"] == model_id)
+    bot.answer_callback_query(call.id, f"✅ مدل {model_label} انتخاب شد")
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+
+    bot.send_message(
+        chat_id,
+        f"✅ گفتگو با مدل {model_label} شروع شد! هر سوالی داری بپرس یا عکس بفرست.\n"
+        "برای پایان دادن، دکمه‌ی «پایان گفتگو» رو بزن.",
         reply_markup=chat_active_keyboard()
     )
 
