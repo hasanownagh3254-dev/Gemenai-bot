@@ -4,6 +4,8 @@ import json
 import time
 import threading
 import base64
+import random
+import urllib.parse
 import requests
 import telebot
 from telebot import types
@@ -16,19 +18,41 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-MODEL_NAME = "openai/gpt-oss-20b"
+# مدل گفتگوی عادی: از سیستم Compound گروک استفاده می‌کنیم که خودش تشخیص می‌ده
+# کی نیاز به جستجوی وب داره، پس جواب‌ها همیشه به‌روزتر از یک مدل معمولی هستن.
+MODEL_NAME = "groq/compound"
+SEARCH_MODEL_NAME = "groq/compound"    # برای حالت سرچ صریح هم از همین سیستم استفاده می‌شه
 VISION_MODEL_NAME = "qwen/qwen3.6-27b"  # مدل ویژن Groq برای پردازش عکس
 
-SYSTEM_PROMPT = "You are a helpful AI assistant. Answer clearly and accurately."
+SYSTEM_PROMPT = (
+    "You are a helpful AI assistant that answers in the user's language (mostly Persian). "
+    "When a question depends on current, time-sensitive, or recent information (news, prices, "
+    "scores, versions, dates, events, etc.), use your web search tool to check before answering, "
+    "so your information is always up to date. Answer clearly and accurately."
+)
 
+SEARCH_SYSTEM_PROMPT = (
+    "You are a research assistant. For every query, you MUST use your web search tool to look up "
+    "current, real information on the web before answering — never answer purely from memory. "
+    "After searching, write a clear, well-organized summary in Persian of what you found, "
+    "including the most important and up-to-date facts. Keep it concise but informative."
+)
+
+# دکمه‌های منوی اصلی
+BTN_SEARCH = "🔎 سرچ"
 BTN_START_CHAT = "🟢 شروع گفتگو"
+BTN_IMAGE = "🖼 ساخت عکس"
+# دکمه‌های حالت گفتگو / حالت سرچ / حالت ساخت عکس
 BTN_END_CHAT = "🔴 پایان گفتگو"
+BTN_END_SEARCH = "🔴 پایان سرچ"
+BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 
 # ==== تنظیمات عضویت اجباری ====
 # یوزرنیم کانال‌هایی که کاربر باید عضوشون باشه (بدون @ ولی با @ هم کار می‌کنه، کد خودش مدیریت می‌کنه)
 # نکته مهم: ربات باید در همه‌ی این کانال‌ها ادمین باشه، وگرنه نمی‌تونه وضعیت عضویت رو چک کنه.
 REQUIRED_CHANNELS = [
-    "@WiseGPTbotChannel",   # <-- اینجا یوزرنیم کانال اول خودت رو بذار
+    "@your_channel_1",   # <-- اینجا یوزرنیم کانال اول خودت رو بذار
+    "@your_channel_2",   # <-- اگه کانال دوم هم داری، اینجا؛ وگرنه این خط رو پاک کن
 ]
 
 CALLBACK_CHECK_JOIN = "check_join"
@@ -39,8 +63,16 @@ CALLBACK_CHECK_JOIN = "check_join"
 CONVERSATION_HISTORY = {}
 MAX_HISTORY_MESSAGES = 20  # حداکثر تعداد پیام (کاربر+ربات) که برای هر چت نگه داشته می‌شه
 
-# وضعیت فعال/غیرفعال بودن گفتگو برای هر چت
-ACTIVE_CHATS = {}  # chat_id -> True/False
+# وضعیت هر چت: None (منوی اصلی) / "chat" (حالت گفتگو) / "search" (حالت سرچ)
+CHAT_MODE = {}
+
+
+def get_mode(chat_id):
+    return CHAT_MODE.get(chat_id)
+
+
+def set_mode(chat_id, mode):
+    CHAT_MODE[chat_id] = mode
 
 
 def get_history(chat_id):
@@ -53,14 +85,29 @@ def trim_history(chat_id):
         CONVERSATION_HISTORY[chat_id] = history[-MAX_HISTORY_MESSAGES:]
 
 
-def is_chat_active(chat_id):
-    return ACTIVE_CHATS.get(chat_id, False)
-
-
 def main_menu_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(BTN_SEARCH))
     keyboard.row(types.KeyboardButton(BTN_START_CHAT))
+    keyboard.row(types.KeyboardButton(BTN_IMAGE))
+    return keyboard
+
+
+def chat_active_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_CHAT))
+    return keyboard
+
+
+def search_active_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(BTN_END_SEARCH))
+    return keyboard
+
+
+def image_active_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(BTN_END_IMAGE))
     return keyboard
 
 
@@ -133,7 +180,7 @@ def call_groq_api(payload, timeout):
         return f"❌ خطای Groq (کد {response.status_code}): {err_msg}"
 
 
-# ۳. ارسال درخواست به API مدل Groq (متن) همراه با تاریخچه مکالمه
+# ۳. ارسال درخواست به API مدل Groq (متن) همراه با تاریخچه مکالمه — با سرچ خودکار در صورت نیاز
 def ask_groq(chat_id, prompt):
     if not GROQ_API_KEY:
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
@@ -148,12 +195,11 @@ def ask_groq(chat_id, prompt):
         "model": MODEL_NAME,
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 1024,
-        "reasoning_format": "hidden"  # جلوگیری از نمایش تگ <think> در جواب
+        "max_tokens": 1024
     }
 
     try:
-        reply = call_groq_api(payload, timeout=20)
+        reply = call_groq_api(payload, timeout=40)
     except Exception as e:
         return f"❌ خطای ارتباطی: {str(e)}"
 
@@ -166,7 +212,28 @@ def ask_groq(chat_id, prompt):
     return reply
 
 
-# ۳ب. ارسال عکس به مدل ویژن Groq برای پردازش
+# ۳ب. حالت سرچ: همیشه در وب جستجو می‌کنه و خلاصه‌ی به‌روز برمی‌گردونه (بدون تاریخچه، تک‌مرحله‌ای)
+def ask_groq_search(query):
+    if not GROQ_API_KEY:
+        return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
+
+    payload = {
+        "model": SEARCH_MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+            {"role": "user", "content": query}
+        ],
+        "temperature": 0.5,
+        "max_tokens": 1024
+    }
+
+    try:
+        return call_groq_api(payload, timeout=45)
+    except Exception as e:
+        return f"❌ خطای ارتباطی: {str(e)}"
+
+
+# ۳ج. ارسال عکس به مدل ویژن Groq برای پردازش
 def ask_groq_vision(image_bytes, prompt="این تصویر را توصیف کن."):
     if not GROQ_API_KEY:
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
@@ -201,7 +268,16 @@ def ask_groq_vision(image_bytes, prompt="این تصویر را توصیف کن.
 TELEGRAM_MAX_LEN = 4000  # کمی کمتر از ۴۰۹۶ برای اطمینان
 
 
-def clean_text(text):
+# ۳د. ساخت عکس از روی توضیح متنی با سرویس رایگان Pollinations.ai (بدون نیاز به API Key)
+# نکته: این سرویس جدا از Groq است، چون Groq مدل ساخت عکس (Text-to-Image) ندارد.
+def generate_image(prompt):
+    encoded_prompt = urllib.parse.quote(prompt)
+    seed = random.randint(1, 1_000_000)
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
+    response = requests.get(url, timeout=60)
+    if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
+        return response.content
+    return None
     if not text:
         return text
     # حذف تگ‌های <think>...</think> باقیمانده (اگر مدل با وجود reasoning_format هم بفرسته)
@@ -238,16 +314,19 @@ def handle_start(message):
     if not check_membership_and_notify(message):
         return
 
-    ACTIVE_CHATS[chat_id] = False
+    set_mode(chat_id, None)
     bot.send_message(
         chat_id,
-        "👋 به ربات خوش اومدی!\n\nبرای شروع گفتگو با هوش مصنوعی، دکمه‌ی «شروع گفتگو» رو بزن. "
-        "هر وقت خواستی گفتگو تمام بشه، دکمه‌ی «پایان گفتگو» رو بزن.",
+        "👋 به ربات خوش اومدی!\n\n"
+        "🔎 سرچ: هر سوالی داشته باشی رو در وب جستجو می‌کنم و خلاصه‌ی به‌روزش رو بهت می‌دم.\n"
+        "🟢 شروع گفتگو: گفتگوی آزاد با هوش مصنوعی (متن و عکس)، با حفظ تاریخچه.\n"
+        "🖼 ساخت عکس: از روی توضیح متنی، عکس می‌سازم.\n\n"
+        "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
 
 
-# ۶. دستور /reset برای پاک کردن حافظه مکالمه (بدون تغییر وضعیت فعال/غیرفعال)
+# ۶. دستور /reset برای پاک کردن حافظه مکالمه (بدون تغییر وضعیت فعلی)
 @bot.message_handler(commands=['reset', 'new'])
 def handle_reset(message):
     CONVERSATION_HISTORY[message.chat.id] = []
@@ -261,12 +340,12 @@ def handle_start_chat_button(message):
         return
 
     chat_id = message.chat.id
-    ACTIVE_CHATS[chat_id] = True
+    set_mode(chat_id, "chat")
     CONVERSATION_HISTORY[chat_id] = []  # شروع تازه
     bot.send_message(
         chat_id,
         "✅ گفتگو شروع شد! هر سوالی داری بپرس یا عکس بفرست.\nبرای پایان دادن، دکمه‌ی «پایان گفتگو» رو بزن.",
-        reply_markup=main_menu_keyboard()
+        reply_markup=chat_active_keyboard()
     )
 
 
@@ -274,16 +353,73 @@ def handle_start_chat_button(message):
 @bot.message_handler(func=lambda message: message.text == BTN_END_CHAT)
 def handle_end_chat_button(message):
     chat_id = message.chat.id
-    ACTIVE_CHATS[chat_id] = False
+    set_mode(chat_id, None)
     CONVERSATION_HISTORY[chat_id] = []
     bot.send_message(
         chat_id,
-        "🔴 گفتگو پایان یافت. هر وقت خواستی دوباره شروع کنی، دکمه‌ی «شروع گفتگو» رو بزن.",
+        "🔴 گفتگو پایان یافت. از منوی زیر یکی رو انتخاب کن.",
         reply_markup=main_menu_keyboard()
     )
 
 
-# ۸ب. دکمه شیشه‌ای «✅ عضو شدم» زیر پیام عضویت اجباری
+# ۸ب. دکمه «سرچ»
+@bot.message_handler(func=lambda message: message.text == BTN_SEARCH)
+def handle_search_button(message):
+    if not check_membership_and_notify(message):
+        return
+
+    chat_id = message.chat.id
+    set_mode(chat_id, "search")
+    bot.send_message(
+        chat_id,
+        "🔎 حالت سرچ فعال شد. هر چی می‌خوای درباره‌ش جستجو کنم رو بنویس؛ "
+        "برات توی وب می‌گردم و خلاصه‌ی به‌روزش رو می‌فرستم.\n"
+        "برای خروج از این حالت، دکمه‌ی «پایان سرچ» رو بزن.",
+        reply_markup=search_active_keyboard()
+    )
+
+
+# ۸ج. دکمه «پایان سرچ»
+@bot.message_handler(func=lambda message: message.text == BTN_END_SEARCH)
+def handle_end_search_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(
+        chat_id,
+        "🔴 حالت سرچ پایان یافت. از منوی زیر یکی رو انتخاب کن.",
+        reply_markup=main_menu_keyboard()
+    )
+
+
+# ۸د. دکمه «ساخت عکس»
+@bot.message_handler(func=lambda message: message.text == BTN_IMAGE)
+def handle_image_button(message):
+    if not check_membership_and_notify(message):
+        return
+
+    chat_id = message.chat.id
+    set_mode(chat_id, "image")
+    bot.send_message(
+        chat_id,
+        "🖼 حالت ساخت عکس فعال شد. توضیح بده چه عکسی می‌خوای بسازم (هرچی دقیق‌تر باشه، نتیجه بهتره).\n"
+        "برای خروج از این حالت، دکمه‌ی «پایان ساخت عکس» رو بزن.",
+        reply_markup=image_active_keyboard()
+    )
+
+
+# ۸ه. دکمه «پایان ساخت عکس»
+@bot.message_handler(func=lambda message: message.text == BTN_END_IMAGE)
+def handle_end_image_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(
+        chat_id,
+        "🔴 حالت ساخت عکس پایان یافت. از منوی زیر یکی رو انتخاب کن.",
+        reply_markup=main_menu_keyboard()
+    )
+
+
+# ۸د. دکمه شیشه‌ای «✅ عضو شدم» زیر پیام عضویت اجباری
 @bot.callback_query_handler(func=lambda call: call.data == CALLBACK_CHECK_JOIN)
 def handle_check_join(call):
     user_id = call.from_user.id
@@ -304,12 +440,12 @@ def handle_check_join(call):
             pass
         bot.send_message(
             chat_id,
-            "👋 خوش اومدی! برای شروع گفتگو با هوش مصنوعی، دکمه‌ی «شروع گفتگو» رو بزن.",
+            "👋 خوش اومدی! از منوی زیر یکی رو انتخاب کن.",
             reply_markup=main_menu_keyboard()
         )
 
 
-# ۹. دریافت و پاسخ به عکس‌ها (فقط وقتی گفتگو فعال باشد)
+# ۹. دریافت و پاسخ به عکس‌ها (فقط در حالت گفتگو)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     chat_id = message.chat.id
@@ -317,10 +453,10 @@ def handle_photo(message):
     if not check_membership_and_notify(message):
         return
 
-    if not is_chat_active(chat_id):
+    if get_mode(chat_id) != "chat":
         bot.send_message(
             chat_id,
-            "برای شروع، اول دکمه‌ی «شروع گفتگو» رو بزن 👇",
+            "برای ارسال عکس، اول باید وارد حالت «شروع گفتگو» بشی 👇",
             reply_markup=main_menu_keyboard()
         )
         return
@@ -344,7 +480,7 @@ def handle_photo(message):
             pass
 
 
-# ۱۰. دریافت و پاسخ به پیام‌های متنی (فقط وقتی گفتگو فعال باشد، با حفظ تاریخچه مکالمه)
+# ۱۰. دریافت و پاسخ به پیام‌های متنی — رفتار بسته به حالت فعلی (منو / گفتگو / سرچ)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     if not message.text:
@@ -355,20 +491,45 @@ def handle_message(message):
     if not check_membership_and_notify(message):
         return
 
-    if not is_chat_active(chat_id):
+    mode = get_mode(chat_id)
+
+    if mode == "chat":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            reply = ask_groq(chat_id, message.text)
+            send_long_message(message, reply, reply_markup=chat_active_keyboard())
+        except Exception as e:
+            print(f"Error handling message: {e}")
+
+    elif mode == "search":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            reply = ask_groq_search(message.text)
+            send_long_message(message, reply, reply_markup=search_active_keyboard())
+        except Exception as e:
+            print(f"Error handling search: {e}")
+
+    elif mode == "image":
+        try:
+            bot.send_chat_action(chat_id, "upload_photo")
+            image_bytes = generate_image(message.text)
+            if image_bytes:
+                bot.send_photo(chat_id, photo=image_bytes, caption=f"🖼 {message.text}", reply_markup=image_active_keyboard())
+            else:
+                bot.send_message(chat_id, "❌ متاسفانه ساخت عکس با خطا مواجه شد. دوباره امتحان کن.", reply_markup=image_active_keyboard())
+        except Exception as e:
+            print(f"Error generating image: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ خطا در ساخت عکس: {str(e)}", reply_markup=image_active_keyboard())
+            except Exception:
+                pass
+
+    else:
         bot.send_message(
             chat_id,
-            "برای شروع، اول دکمه‌ی «شروع گفتگو» رو بزن 👇",
+            "لطفاً اول از منوی زیر یکی از گزینه‌ها رو انتخاب کن 👇",
             reply_markup=main_menu_keyboard()
         )
-        return
-
-    try:
-        bot.send_chat_action(chat_id, "typing")
-        reply = ask_groq(chat_id, message.text)
-        send_long_message(message, reply)
-    except Exception as e:
-        print(f"Error handling message: {e}")
 
 
 # ۱۱. اجرای ربات تلگرام به صورت ایمن و خودکار
