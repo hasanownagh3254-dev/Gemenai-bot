@@ -51,7 +51,7 @@ BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 # یوزرنیم کانال‌هایی که کاربر باید عضوشون باشه (بدون @ ولی با @ هم کار می‌کنه، کد خودش مدیریت می‌کنه)
 # نکته مهم: ربات باید در همه‌ی این کانال‌ها ادمین باشه، وگرنه نمی‌تونه وضعیت عضویت رو چک کنه.
 REQUIRED_CHANNELS = [
-    "@WiseGPTbotChannel",   # <-- اینجا یوزرنیم کانال اول خودت رو بذار
+    "@WiseGPTbotChannel",
 ]
 
 CALLBACK_CHECK_JOIN = "check_join"
@@ -208,7 +208,7 @@ def ask_groq(chat_id, prompt):
     }
 
     try:
-        reply = call_groq_api(payload, timeout=40)
+        reply = call_groq_api(payload, timeout=60)
     except Exception as e:
         return f"❌ خطای ارتباطی: {str(e)}"
 
@@ -237,7 +237,7 @@ def ask_groq_search(query):
     }
 
     try:
-        return call_groq_api(payload, timeout=45)
+        return call_groq_api(payload, timeout=60)
     except Exception as e:
         return f"❌ خطای ارتباطی: {str(e)}"
 
@@ -509,6 +509,10 @@ def handle_message(message):
             send_long_message(message, reply, reply_markup=chat_active_keyboard())
         except Exception as e:
             print(f"Error handling message: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ یه خطا پیش اومد: {str(e)}\nدوباره امتحان کن.", reply_markup=chat_active_keyboard())
+            except Exception:
+                pass
 
     elif mode == "search":
         try:
@@ -517,6 +521,10 @@ def handle_message(message):
             send_long_message(message, reply, reply_markup=search_active_keyboard())
         except Exception as e:
             print(f"Error handling search: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ یه خطا پیش اومد: {str(e)}\nدوباره امتحان کن.", reply_markup=search_active_keyboard())
+            except Exception:
+                pass
 
     elif mode == "image":
         try:
