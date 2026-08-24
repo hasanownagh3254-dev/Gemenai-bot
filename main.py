@@ -18,34 +18,28 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# مدل گفتگوی عادی: از سیستم Compound گروک استفاده می‌کنیم که خودش تشخیص می‌ده
-# کی نیاز به جستجوی وب داره، پس جواب‌ها همیشه به‌روزتر از یک مدل معمولی هستن.
-MODEL_NAME = "groq/compound"
-SEARCH_MODEL_NAME = "groq/compound"    # برای حالت سرچ صریح هم از همین سیستم استفاده می‌شه
+# مدل گفتگوی عادی: groq/compound-mini خودش تشخیص می‌ده کِی نیاز به جستجوی وب داره
+# (اخبار، قیمت، نسخه‌ی جدید، نتیجه‌ی بازی، و...) و خودکار سرچ می‌کنه، بدون نیاز به دکمه‌ی جدا.
+MODEL_NAME = "groq/compound-mini"
 VISION_MODEL_NAME = "qwen/qwen3.6-27b"  # مدل ویژن Groq برای پردازش عکس
+STT_MODEL_NAME = "whisper-large-v3-turbo"  # مدل تبدیل ویس به متن (چندزبانه، فارسی هم پشتیبانی می‌کنه)
 
 SYSTEM_PROMPT = (
     "You are a helpful AI assistant that answers in the user's language (mostly Persian). "
     "When a question depends on current, time-sensitive, or recent information (news, prices, "
     "scores, versions, dates, events, etc.), use your web search tool to check before answering, "
-    "so your information is always up to date. Answer clearly and accurately."
-)
-
-SEARCH_SYSTEM_PROMPT = (
-    "You are a research assistant. For every query, you MUST use your web search tool to look up "
-    "current, real information on the web before answering — never answer purely from memory. "
-    "After searching, write a clear, well-organized summary in Persian of what you found, "
-    "including the most important and up-to-date facts. Keep it concise but informative."
+    "so your information is always up to date. For questions that don't need current info, "
+    "answer directly without searching. Answer clearly and accurately."
 )
 
 # دکمه‌های منوی اصلی
-BTN_SEARCH = "🔎 سرچ در اینترنت"
 BTN_START_CHAT = "🟢 شروع گفتگو"
 BTN_IMAGE = "🖼 ساخت عکس"
-# دکمه‌های حالت گفتگو / حالت سرچ / حالت ساخت عکس
+BTN_STT = "🎙 ویس به متن"
+# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن
 BTN_END_CHAT = "🔴 پایان گفتگو"
-BTN_END_SEARCH = "🔴 پایان سرچ"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
+BTN_END_STT = "🔴 پایان ویس به متن"
 
 # ==== تنظیمات عضویت اجباری ====
 # یوزرنیم کانال‌هایی که کاربر باید عضوشون باشه (بدون @ ولی با @ هم کار می‌کنه، کد خودش مدیریت می‌کنه)
@@ -92,7 +86,7 @@ def main_menu_keyboard():
     - از ۵ دکمه به بالا: سه ستون (سه‌تا-سه‌تا) تا فضای کمتری بگیره
     اگه تعداد دکمه‌ها بخش‌پذیر نباشه، آخرین ردیف با تعداد کمتر پر می‌شه.
     """
-    buttons = [BTN_SEARCH, BTN_START_CHAT, BTN_IMAGE]  # هر قابلیت جدید رو همینجا اضافه کن
+    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -108,15 +102,15 @@ def chat_active_keyboard():
     return keyboard
 
 
-def search_active_keyboard():
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.row(types.KeyboardButton(BTN_END_SEARCH))
-    return keyboard
-
-
 def image_active_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_IMAGE))
+    return keyboard
+
+
+def stt_active_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(BTN_END_STT))
     return keyboard
 
 
@@ -184,6 +178,11 @@ def call_groq_api(payload, timeout):
 
     if response.status_code == 200 and "choices" in data and len(data["choices"]) > 0:
         return data["choices"][0]["message"]["content"]
+    elif response.status_code == 413:
+        return (
+            "❌ سوالت باعث شد نتایج جستجو خیلی حجیم بشن و از محدودیت سرویس رد بشه.\n"
+            "لطفاً سوالت رو دقیق‌تر و کوتاه‌تر بپرس (مثلاً به‌جای «همه چیز رو درباره X بگو»، یک سوال مشخص بپرس) و دوباره امتحان کن."
+        )
     else:
         err_msg = data.get("error", {}).get("message", response.text)
         return f"❌ خطای Groq (کد {response.status_code}): {err_msg}"
@@ -208,7 +207,7 @@ def ask_groq(chat_id, prompt):
     }
 
     try:
-        reply = call_groq_api(payload, timeout=60)
+        reply = call_groq_api(payload, timeout=45)
     except Exception as e:
         return f"❌ خطای ارتباطی: {str(e)}"
 
@@ -221,28 +220,7 @@ def ask_groq(chat_id, prompt):
     return reply
 
 
-# ۳ب. حالت سرچ: همیشه در وب جستجو می‌کنه و خلاصه‌ی به‌روز برمی‌گردونه (بدون تاریخچه، تک‌مرحله‌ای)
-def ask_groq_search(query):
-    if not GROQ_API_KEY:
-        return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
-
-    payload = {
-        "model": SEARCH_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
-            {"role": "user", "content": query}
-        ],
-        "temperature": 0.5,
-        "max_tokens": 1024
-    }
-
-    try:
-        return call_groq_api(payload, timeout=60)
-    except Exception as e:
-        return f"❌ خطای ارتباطی: {str(e)}"
-
-
-# ۳ج. ارسال عکس به مدل ویژن Groq برای پردازش
+# ۳ب. ارسال عکس به مدل ویژن Groq برای پردازش
 def ask_groq_vision(image_bytes, prompt="این تصویر را توصیف کن."):
     if not GROQ_API_KEY:
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
@@ -269,6 +247,31 @@ def ask_groq_vision(image_bytes, prompt="این تصویر را توصیف کن.
 
     try:
         return call_groq_api(payload, timeout=30)
+    except Exception as e:
+        return f"❌ خطای ارتباطی: {str(e)}"
+
+
+# ۳ج. تبدیل ویس به متن با مدل Whisper گروک (چندزبانه، فارسی رو هم خوب تشخیص می‌ده)
+def transcribe_voice(audio_bytes, filename="voice.ogg"):
+    if not GROQ_API_KEY:
+        return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
+
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    files = {"file": (filename, audio_bytes)}
+    data = {"model": STT_MODEL_NAME}
+
+    try:
+        response = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+        response.encoding = "utf-8"
+        result = json.loads(response.text)
+
+        if response.status_code == 200 and "text" in result:
+            text = result["text"].strip()
+            return text if text else "(چیزی توی ویس تشخیص داده نشد)"
+        else:
+            err_msg = result.get("error", {}).get("message", response.text)
+            return f"❌ خطای Groq (کد {response.status_code}): {err_msg}"
     except Exception as e:
         return f"❌ خطای ارتباطی: {str(e)}"
 
@@ -327,9 +330,9 @@ def handle_start(message):
     bot.send_message(
         chat_id,
         "👋 به ربات خوش اومدی!\n\n"
-        "🔎 سرچ در اینترنت: هر سوالی داشته باشی رو در وب جستجو می‌کنم و خلاصه‌ی به‌روزش رو بهت می‌دم.\n"
         "🟢 شروع گفتگو: گفتگوی آزاد با هوش مصنوعی (متن و عکس)، با حفظ تاریخچه.\n"
-        "🖼 ساخت عکس: از روی توضیح متنی، عکس می‌سازم.\n\n"
+        "🖼 ساخت عکس: از روی توضیح متنی، عکس می‌سازم.\n"
+        "🎙 ویس به متن: ویس بفرست، متنش رو برات می‌نویسم.\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
@@ -371,36 +374,7 @@ def handle_end_chat_button(message):
     )
 
 
-# ۸ب. دکمه «سرچ»
-@bot.message_handler(func=lambda message: message.text == BTN_SEARCH)
-def handle_search_button(message):
-    if not check_membership_and_notify(message):
-        return
-
-    chat_id = message.chat.id
-    set_mode(chat_id, "search")
-    bot.send_message(
-        chat_id,
-        "🔎 حالت سرچ فعال شد. هر چی می‌خوای درباره‌ش جستجو کنم رو بنویس؛ "
-        "برات توی وب می‌گردم و خلاصه‌ی به‌روزش رو می‌فرستم.\n"
-        "برای خروج از این حالت، دکمه‌ی «پایان سرچ» رو بزن.",
-        reply_markup=search_active_keyboard()
-    )
-
-
-# ۸ج. دکمه «پایان سرچ»
-@bot.message_handler(func=lambda message: message.text == BTN_END_SEARCH)
-def handle_end_search_button(message):
-    chat_id = message.chat.id
-    set_mode(chat_id, None)
-    bot.send_message(
-        chat_id,
-        "🔴 حالت سرچ پایان یافت. از منوی زیر یکی رو انتخاب کن.",
-        reply_markup=main_menu_keyboard()
-    )
-
-
-# ۸د. دکمه «ساخت عکس»
+# ۸ب. دکمه «ساخت عکس»
 @bot.message_handler(func=lambda message: message.text == BTN_IMAGE)
 def handle_image_button(message):
     if not check_membership_and_notify(message):
@@ -424,6 +398,34 @@ def handle_end_image_button(message):
     bot.send_message(
         chat_id,
         "🔴 حالت ساخت عکس پایان یافت. از منوی زیر یکی رو انتخاب کن.",
+        reply_markup=main_menu_keyboard()
+    )
+
+
+# ۸و. دکمه «ویس به متن»
+@bot.message_handler(func=lambda message: message.text == BTN_STT)
+def handle_stt_button(message):
+    if not check_membership_and_notify(message):
+        return
+
+    chat_id = message.chat.id
+    set_mode(chat_id, "stt")
+    bot.send_message(
+        chat_id,
+        "🎙 حالت ویس به متن فعال شد. یک پیام صوتی (ویس) بفرست تا متنش رو برات بنویسم.\n"
+        "برای خروج از این حالت، دکمه‌ی «پایان ویس به متن» رو بزن.",
+        reply_markup=stt_active_keyboard()
+    )
+
+
+# ۸ز. دکمه «پایان ویس به متن»
+@bot.message_handler(func=lambda message: message.text == BTN_END_STT)
+def handle_end_stt_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(
+        chat_id,
+        "🔴 حالت ویس به متن پایان یافت. از منوی زیر یکی رو انتخاب کن.",
         reply_markup=main_menu_keyboard()
     )
 
@@ -489,6 +491,40 @@ def handle_photo(message):
             pass
 
 
+# ۹ب. دریافت و پاسخ به پیام‌های صوتی (فقط در حالت ویس به متن)
+@bot.message_handler(content_types=['voice', 'audio'])
+def handle_voice(message):
+    chat_id = message.chat.id
+
+    if not check_membership_and_notify(message):
+        return
+
+    if get_mode(chat_id) != "stt":
+        bot.send_message(
+            chat_id,
+            "برای تبدیل ویس به متن، اول باید وارد حالت «ویس به متن» بشی 👇",
+            reply_markup=main_menu_keyboard()
+        )
+        return
+
+    try:
+        bot.send_chat_action(chat_id, "typing")
+
+        voice_or_audio = message.voice or message.audio
+        file_id = voice_or_audio.file_id
+        file_info = bot.get_file(file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+
+        text = transcribe_voice(downloaded_file, filename="voice.ogg")
+        bot.reply_to(message, f"📝 {text}", reply_markup=stt_active_keyboard())
+    except Exception as e:
+        print(f"Error handling voice: {e}")
+        try:
+            bot.send_message(chat_id, f"❌ خطا در پردازش ویس: {str(e)}", reply_markup=stt_active_keyboard())
+        except Exception:
+            pass
+
+
 # ۱۰. دریافت و پاسخ به پیام‌های متنی — رفتار بسته به حالت فعلی (منو / گفتگو / سرچ)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -511,18 +547,6 @@ def handle_message(message):
             print(f"Error handling message: {e}")
             try:
                 bot.send_message(chat_id, f"❌ یه خطا پیش اومد: {str(e)}\nدوباره امتحان کن.", reply_markup=chat_active_keyboard())
-            except Exception:
-                pass
-
-    elif mode == "search":
-        try:
-            bot.send_chat_action(chat_id, "typing")
-            reply = ask_groq_search(message.text)
-            send_long_message(message, reply, reply_markup=search_active_keyboard())
-        except Exception as e:
-            print(f"Error handling search: {e}")
-            try:
-                bot.send_message(chat_id, f"❌ یه خطا پیش اومد: {str(e)}\nدوباره امتحان کن.", reply_markup=search_active_keyboard())
             except Exception:
                 pass
 
