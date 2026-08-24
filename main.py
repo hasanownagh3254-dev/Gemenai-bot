@@ -23,23 +23,19 @@ VISION_MODEL_NAME = "qwen/qwen3.6-27b"  # مدل ویژن Groq برای پردا
 STT_MODEL_NAME = "whisper-large-v3-turbo"  # مدل تبدیل ویس به متن (چندزبانه، فارسی هم پشتیبانی می‌کنه)
 
 # مدل‌های قابل انتخاب برای حالت گفتگو — با زدن «شروع گفتگو» کاربر از بین این‌ها انتخاب می‌کنه
+# نکته: مدل‌های groq/compound و groq/compound-mini (که خودشون سرچ می‌کردن) به‌خاطر
+# گیر کردن مکرر روی محدودیت نرخ (rate limit / خطای ۴۲۹) کاملاً از لیست حذف شدن.
 CHAT_MODEL_OPTIONS = [
     {"id": "openai/gpt-oss-20b", "label": "⚡ سریع", "desc": "پاسخ‌گویی سریع برای گفتگوی روزمره"},
-    {"id": "groq/compound-mini", "label": "🔎 هوشمند + سرچ", "desc": "خودش وقت نیاز باشه توی وب سرچ می‌کنه"},
     {"id": "openai/gpt-oss-120b", "label": "🧠 قوی‌تر", "desc": "مدل بزرگ‌تر برای سوال‌های پیچیده‌تر"},
+    {"id": "qwen/qwen3.6-27b", "label": "🖇 چندمنظوره", "desc": "متن و تصویر با هم، مناسب تحلیل ترکیبی"},
 ]
 DEFAULT_CHAT_MODEL = CHAT_MODEL_OPTIONS[0]["id"]
 
 # مدل انتخابی هر چت (chat_id -> model_id)
 CHAT_MODEL_CHOICE = {}
 
-SYSTEM_PROMPT = (
-    "You are a helpful AI assistant that answers in the user's language (mostly Persian). "
-    "When a question depends on current, time-sensitive, or recent information (news, prices, "
-    "scores, versions, dates, events, etc.), use your web search tool to check before answering, "
-    "so your information is always up to date. For questions that don't need current info, "
-    "answer directly without searching. Answer clearly and accurately."
-)
+SYSTEM_PROMPT = "You are a helpful AI assistant that answers in the user's language (mostly Persian). Answer clearly and accurately."
 
 # دکمه‌های منوی اصلی
 BTN_START_CHAT = "🟢 شروع گفتگو"
@@ -50,7 +46,8 @@ BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 BTN_END_STT = "🔴 پایان ویس به متن"
 
-CALLBACK_SELECT_MODEL_PREFIX = "selmodel:"
+# متن دکمه‌های انتخاب مدل (کیبورد پایین صفحه) → آیدی مدل
+MODEL_BUTTON_TEXTS = {f"{opt['label']} — {opt['desc']}": opt["id"] for opt in CHAT_MODEL_OPTIONS}
 
 # ==== تنظیمات عضویت اجباری ====
 # یوزرنیم کانال‌هایی که کاربر باید عضوشون باشه (بدون @ ولی با @ هم کار می‌کنه، کد خودش مدیریت می‌کنه)
@@ -67,7 +64,7 @@ CALLBACK_CHECK_JOIN = "check_join"
 CONVERSATION_HISTORY = {}
 MAX_HISTORY_MESSAGES = 20  # حداکثر تعداد پیام (کاربر+ربات) که برای هر چت نگه داشته می‌شه
 
-# وضعیت هر چت: None (منوی اصلی) / "chat" (حالت گفتگو) / "search" (حالت سرچ)
+# وضعیت هر چت: None (منوی اصلی) / "choosing_model" (در حال انتخاب مدل) / "chat" (حالت گفتگو) / "image" / "stt"
 CHAT_MODE = {}
 
 
@@ -122,6 +119,13 @@ def image_active_keyboard():
 def stt_active_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_STT))
+    return keyboard
+
+
+def model_selection_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for button_text in MODEL_BUTTON_TEXTS:
+        keyboard.row(types.KeyboardButton(button_text))
     return keyboard
 
 
@@ -190,16 +194,15 @@ def call_groq_api(payload, timeout):
     if response.status_code == 200 and "choices" in data and len(data["choices"]) > 0:
         return data["choices"][0]["message"]["content"]
     elif response.status_code == 413:
-        return (
-            "❌ سوالت باعث شد نتایج جستجو خیلی حجیم بشن و از محدودیت سرویس رد بشه.\n"
-            "لطفاً سوالت رو دقیق‌تر و کوتاه‌تر بپرس (مثلاً به‌جای «همه چیز رو درباره X بگو»، یک سوال مشخص بپرس) و دوباره امتحان کن."
-        )
+        return "❌ درخواستت (متن یا تاریخچه‌ی گفتگو) خیلی حجیمه. با /reset حافظه رو پاک کن و دوباره امتحان کن."
+    elif response.status_code == 429:
+        return "❌ سرویس موقتاً شلوغه (محدودیت نرخ). چند ثانیه صبر کن و دوباره امتحان کن."
     else:
         err_msg = data.get("error", {}).get("message", response.text)
         return f"❌ خطای Groq (کد {response.status_code}): {err_msg}"
 
 
-# ۳. ارسال درخواست به API مدل Groq (متن) همراه با تاریخچه مکالمه — با سرچ خودکار در صورت نیاز
+# ۳. ارسال درخواست به API مدل Groq (متن) همراه با تاریخچه مکالمه
 def ask_groq(chat_id, prompt):
     if not GROQ_API_KEY:
         return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
@@ -218,7 +221,6 @@ def ask_groq(chat_id, prompt):
         "max_tokens": 1024
     }
     # مدل‌های خانواده‌ی gpt-oss از reasoning_format پشتیبانی می‌کنن (برای مخفی کردن تگ <think>)
-    # مدل‌های compound این پارامتر رو لازم ندارن.
     if "gpt-oss" in model_id:
         payload["reasoning_format"] = "hidden"
 
@@ -305,6 +307,9 @@ def generate_image(prompt):
     response = requests.get(url, timeout=60)
     if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
         return response.content
+    return None
+
+
 def clean_text(text):
     if not text:
         return text
@@ -318,20 +323,95 @@ def clean_text(text):
     return text.strip()
 
 
+def split_code_blocks(text):
+    """
+    متن رو به بخش‌های متن عادی و بخش‌های کد (بین ```) تقسیم می‌کنه.
+    خروجی: لیستی از تاپل‌های ("text", content) یا ("code", content, lang)
+    """
+    pattern = re.compile(r"```(\w+)?\n?(.*?)```", re.DOTALL)
+    segments = []
+    last_end = 0
+    for m in pattern.finditer(text):
+        if m.start() > last_end:
+            segments.append(("text", text[last_end:m.start()]))
+        lang = m.group(1) or ""
+        code = m.group(2).strip("\n")
+        if code:
+            segments.append(("code", code, lang))
+        last_end = m.end()
+    if last_end < len(text):
+        segments.append(("text", text[last_end:]))
+    return segments
+
+
 def send_long_message(message, text, reply_markup=None):
-    text = clean_text(text)
-    if not text:
-        text = "(پاسخی دریافت نشد)"
+    chat_id = message.chat.id
+    segments = split_code_blocks(text)
+    has_code = any(seg[0] == "code" for seg in segments)
 
-    chunks = [text[i:i + TELEGRAM_MAX_LEN] for i in range(0, len(text), TELEGRAM_MAX_LEN)]
+    if not has_code:
+        # مسیر ساده: بدون بلوک کد، مثل قبل متن رو تکه‌تکه می‌کنیم و می‌فرستیم
+        content = clean_text(text)
+        if not content:
+            content = "(پاسخی دریافت نشد)"
+        chunks = [content[i:i + TELEGRAM_MAX_LEN] for i in range(0, len(content), TELEGRAM_MAX_LEN)]
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            markup = reply_markup if is_last else None
+            if i == 0:
+                bot.reply_to(message, chunk, reply_markup=markup)
+            else:
+                bot.send_message(chat_id, chunk, reply_markup=markup)
+        return
 
-    for i, chunk in enumerate(chunks):
-        is_last = (i == len(chunks) - 1)
-        markup = reply_markup if is_last else None
-        if i == 0:
-            bot.reply_to(message, chunk, reply_markup=markup)
+    # مسیر با بلوک کد: هر بخش کد رو با فرمت مخصوص تلگرام (قابل کپی، مونواسپیس) می‌فرستیم
+    parts = []
+    for seg in segments:
+        if seg[0] == "text":
+            cleaned = clean_text(seg[1])
+            if cleaned:
+                parts.append(("text", cleaned, None))
         else:
-            bot.send_message(message.chat.id, chunk, reply_markup=markup)
+            _, code, lang = seg
+            parts.append(("code", code, lang))
+
+    if not parts:
+        parts = [("text", "(پاسخی دریافت نشد)", None)]
+
+    first_sent = False
+    last_part_index = len(parts) - 1
+
+    for idx, (kind, content, lang) in enumerate(parts):
+        is_last_part = (idx == last_part_index)
+        if kind == "code":
+            max_code_len = TELEGRAM_MAX_LEN - 20
+            code_chunks = [content[i:i + max_code_len] for i in range(0, len(content), max_code_len)] or [""]
+            for cidx, cchunk in enumerate(code_chunks):
+                is_last_chunk = is_last_part and (cidx == len(code_chunks) - 1)
+                markup = reply_markup if is_last_chunk else None
+                fenced = f"```{lang}\n{cchunk}\n```"
+                try:
+                    if not first_sent:
+                        bot.reply_to(message, fenced, parse_mode="Markdown", reply_markup=markup)
+                    else:
+                        bot.send_message(chat_id, fenced, parse_mode="Markdown", reply_markup=markup)
+                except Exception:
+                    # اگه به هر دلیلی پارس مارک‌داون خطا داد، بدون فرمت‌دهی می‌فرستیم تا پیام گم نشه
+                    if not first_sent:
+                        bot.reply_to(message, cchunk, reply_markup=markup)
+                    else:
+                        bot.send_message(chat_id, cchunk, reply_markup=markup)
+                first_sent = True
+        else:
+            text_chunks = [content[i:i + TELEGRAM_MAX_LEN] for i in range(0, len(content), TELEGRAM_MAX_LEN)]
+            for tidx, tchunk in enumerate(text_chunks):
+                is_last_chunk = is_last_part and (tidx == len(text_chunks) - 1)
+                markup = reply_markup if is_last_chunk else None
+                if not first_sent:
+                    bot.reply_to(message, tchunk, reply_markup=markup)
+                else:
+                    bot.send_message(chat_id, tchunk, reply_markup=markup)
+                first_sent = True
 
 
 # ۵. دستور شروع ربات: نمایش منوی اصلی
@@ -361,48 +441,34 @@ def handle_reset(message):
     bot.reply_to(message, "✅ حافظه مکالمه پاک شد.")
 
 
-# ۷. دکمه «شروع گفتگو» — اول منوی انتخاب مدل رو نشون می‌ده
+# ۷. دکمه «شروع گفتگو» — منوی انتخاب مدل رو با کیبورد پایین صفحه نشون می‌ده
 @bot.message_handler(func=lambda message: message.text == BTN_START_CHAT)
 def handle_start_chat_button(message):
     if not check_membership_and_notify(message):
         return
 
     chat_id = message.chat.id
-    keyboard = types.InlineKeyboardMarkup()
-    for option in CHAT_MODEL_OPTIONS:
-        button_text = f"{option['label']} — {option['desc']}"
-        keyboard.add(types.InlineKeyboardButton(button_text, callback_data=CALLBACK_SELECT_MODEL_PREFIX + option["id"]))
-
+    set_mode(chat_id, "choosing_model")
     bot.send_message(
         chat_id,
         "با کدوم مدل می‌خوای گفتگو کنی؟ 👇",
-        reply_markup=keyboard
+        reply_markup=model_selection_keyboard()
     )
 
 
-# ۷ب. انتخاب مدل از منوی شیشه‌ای بالا
-@bot.callback_query_handler(func=lambda call: call.data.startswith(CALLBACK_SELECT_MODEL_PREFIX))
-def handle_select_model(call):
-    model_id = call.data[len(CALLBACK_SELECT_MODEL_PREFIX):]
-    chat_id = call.message.chat.id
+# ۷ب. انتخاب مدل از همون کیبورد پایین صفحه
+@bot.message_handler(func=lambda message: message.text in MODEL_BUTTON_TEXTS)
+def handle_select_model(message):
+    chat_id = message.chat.id
+    if get_mode(chat_id) != "choosing_model":
+        return  # این دکمه‌ها فقط وقتی توی حالت انتخاب مدل هستیم معتبرن
 
-    # اطمینان از معتبر بودن مدل انتخابی
-    valid_ids = [option["id"] for option in CHAT_MODEL_OPTIONS]
-    if model_id not in valid_ids:
-        bot.answer_callback_query(call.id, "❌ مدل نامعتبر.", show_alert=True)
-        return
-
+    model_id = MODEL_BUTTON_TEXTS[message.text]
     CHAT_MODEL_CHOICE[chat_id] = model_id
     set_mode(chat_id, "chat")
     CONVERSATION_HISTORY[chat_id] = []  # شروع تازه
 
     model_label = next(o["label"] for o in CHAT_MODEL_OPTIONS if o["id"] == model_id)
-    bot.answer_callback_query(call.id, f"✅ مدل {model_label} انتخاب شد")
-    try:
-        bot.delete_message(chat_id, call.message.message_id)
-    except Exception:
-        pass
-
     bot.send_message(
         chat_id,
         f"✅ گفتگو با مدل {model_label} شروع شد! هر سوالی داری بپرس یا عکس بفرست.\n"
@@ -575,7 +641,7 @@ def handle_voice(message):
             pass
 
 
-# ۱۰. دریافت و پاسخ به پیام‌های متنی — رفتار بسته به حالت فعلی (منو / گفتگو / سرچ)
+# ۱۰. دریافت و پاسخ به پیام‌های متنی — رفتار بسته به حالت فعلی (منو / انتخاب مدل / گفتگو / ساخت عکس)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     if not message.text:
@@ -614,6 +680,13 @@ def handle_message(message):
                 bot.send_message(chat_id, f"❌ خطا در ساخت عکس: {str(e)}", reply_markup=image_active_keyboard())
             except Exception:
                 pass
+
+    elif mode == "choosing_model":
+        bot.send_message(
+            chat_id,
+            "لطفاً یکی از دکمه‌های مدل رو از کیبورد پایین انتخاب کن 👇",
+            reply_markup=model_selection_keyboard()
+        )
 
     else:
         bot.send_message(
