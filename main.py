@@ -25,9 +25,9 @@ STT_MODEL_NAME = "whisper-large-v3-turbo"  # مدل تبدیل ویس به مت�
 
 # مدل Gemini برای قابلیت‌های سرچ، خواندن سند، و تحلیل ویدیو
 # "gemini-flash-latest" یک alias است که همیشه به آخرین نسخه‌ی پایدار Flash گوگل اشاره می‌کنه
-# "gemini-flash-latest" گاهی به مدل‌های preview/تجربی با تقاضای بالا و خطای ۵۰۳ اشاره می‌کنه؛
-# gemini-2.5-flash پایدار و کمتر دچار این مشکل می‌شه.
-GEMINI_MODEL = "gemini-2.5-flash"
+# طبق پیام خود Google API، gemini-2.5-flash برای کاربران جدید دیگه در دسترس نیست؛
+# gemini-3.6-flash مدل فعلی توصیه‌شده است.
+GEMINI_MODEL = "gemini-3.6-flash"
 
 # مدل‌های قابل انتخاب برای حالت گفتگو — با زدن «شروع گفتگو» کاربر از بین این‌ها انتخاب می‌کنه
 # نکته: مدل‌های groq/compound و groq/compound-mini (که خودشون سرچ می‌کردن) به‌خاطر
