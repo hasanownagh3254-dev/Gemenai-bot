@@ -39,7 +39,7 @@ SEARCH_SYSTEM_PROMPT = (
 )
 
 # دکمه‌های منوی اصلی
-BTN_SEARCH = "🔎 سرچ"
+BTN_SEARCH = "🔎 سرچ در اینترنت"
 BTN_START_CHAT = "🟢 شروع گفتگو"
 BTN_IMAGE = "🖼 ساخت عکس"
 # دکمه‌های حالت گفتگو / حالت سرچ / حالت ساخت عکس
@@ -286,7 +286,7 @@ def generate_image(prompt):
     response = requests.get(url, timeout=60)
     if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
         return response.content
-    return None
+def clean_text(text):
     if not text:
         return text
     # حذف تگ‌های <think>...</think> باقیمانده (اگر مدل با وجود reasoning_format هم بفرسته)
@@ -327,7 +327,7 @@ def handle_start(message):
     bot.send_message(
         chat_id,
         "👋 به ربات خوش اومدی!\n\n"
-        "🔎 سرچ: هر سوالی داشته باشی رو در وب جستجو می‌کنم و خلاصه‌ی به‌روزش رو بهت می‌دم.\n"
+        "🔎 سرچ در اینترنت: هر سوالی داشته باشی رو در وب جستجو می‌کنم و خلاصه‌ی به‌روزش رو بهت می‌دم.\n"
         "🟢 شروع گفتگو: گفتگوی آزاد با هوش مصنوعی (متن و عکس)، با حفظ تاریخچه.\n"
         "🖼 ساخت عکس: از روی توضیح متنی، عکس می‌سازم.\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
