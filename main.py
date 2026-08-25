@@ -438,10 +438,15 @@ TELEGRAM_MAX_LEN = 4000  # کمی کمتر از ۴۰۹۶ برای اطمینان
 
 # ۳د. ساخت عکس از روی توضیح متنی با سرویس رایگان Pollinations.ai (بدون نیاز به API Key)
 # نکته: این سرویس جدا از Groq است، چون Groq مدل ساخت عکس (Text-to-Image) ندارد.
-def generate_image(prompt):
+def generate_image(prompt, reference_image_url=None):
     encoded_prompt = urllib.parse.quote(prompt)
     seed = random.randint(1, 1_000_000)
-    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
+    if reference_image_url:
+        # مدل kontext: تصویر جدید رو بر اساس عکس مرجع + توضیح متنی می‌سازه
+        encoded_ref = urllib.parse.quote(reference_image_url, safe="")
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=kontext&image={encoded_ref}&width=1024&height=1024&seed={seed}&nologo=true"
+    else:
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
     response = requests.get(url, timeout=60)
     if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
         return response.content
@@ -641,7 +646,8 @@ def handle_image_button(message):
     set_mode(chat_id, "image")
     bot.send_message(
         chat_id,
-        "🖼 حالت ساخت عکس فعال شد. توضیح بده چه عکسی می‌خوای بسازم (هرچی دقیق‌تر باشه، نتیجه بهتره).\n"
+        "🖼 حالت ساخت عکس فعال شد. یا فقط متن بفرست تا از صفر عکس بسازم، "
+        "یا یه عکس بفرست همراه با کپشن (توضیح تغییری که می‌خوای) تا بر اساس اون عکس، عکس جدید بسازم.\n"
         "برای خروج از این حالت، دکمه‌ی «پایان ساخت عکس» رو بزن.",
         reply_markup=image_active_keyboard()
     )
@@ -798,7 +804,7 @@ def handle_check_join(call):
         )
 
 
-# ۹. دریافت و پاسخ به عکس‌ها (فقط در حالت گفتگو)
+# ۹. دریافت و پاسخ به عکس‌ها (حالت گفتگو: توصیف عکس / حالت ساخت عکس: ساخت عکس جدید بر اساس عکس مرجع)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     chat_id = message.chat.id
@@ -806,10 +812,42 @@ def handle_photo(message):
     if not check_membership_and_notify(message):
         return
 
-    if get_mode(chat_id) != "chat":
+    mode = get_mode(chat_id)
+
+    if mode == "image":
+        if not message.caption:
+            bot.send_message(
+                chat_id,
+                "❗️ برای ساخت عکس جدید بر اساس این عکس، باید توی کپشن (زیرنویس) عکس توضیح بدی چه تغییری/عکسی می‌خوای. "
+                "مثلاً: «این آدم رو تبدیل به یه شوالیه کن».",
+                reply_markup=image_active_keyboard()
+            )
+            return
+
+        try:
+            bot.send_chat_action(chat_id, "upload_photo")
+
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            telegram_file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info.file_path}"
+
+            image_bytes = generate_image(message.caption, reference_image_url=telegram_file_url)
+            if image_bytes:
+                bot.send_photo(chat_id, photo=image_bytes, caption=f"🖼 {message.caption}", reply_markup=image_active_keyboard())
+            else:
+                bot.send_message(chat_id, "❌ متاسفانه ساخت عکس با خطا مواجه شد. دوباره امتحان کن.", reply_markup=image_active_keyboard())
+        except Exception as e:
+            print(f"Error generating image from reference: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ خطا در ساخت عکس: {str(e)}", reply_markup=image_active_keyboard())
+            except Exception:
+                pass
+        return
+
+    if mode != "chat":
         bot.send_message(
             chat_id,
-            "برای ارسال عکس، اول باید وارد حالت «شروع گفتگو» بشی 👇",
+            "برای ارسال عکس، اول باید وارد حالت «شروع گفتگو» (برای توصیف عکس) یا «ساخت عکس» (برای ساخت عکس جدید) بشی 👇",
             reply_markup=main_menu_keyboard()
         )
         return
