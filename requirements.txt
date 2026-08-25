@@ -1,4 +1,4 @@
 pyTelegramBotAPI
 requests
 flask
-telebot, requests, flask
+edge-tts
