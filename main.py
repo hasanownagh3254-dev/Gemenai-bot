@@ -443,15 +443,17 @@ def generate_image(prompt, reference_image_url=None):
     encoded_prompt = urllib.parse.quote(prompt)
     seed = random.randint(1, 1_000_000)
     headers = {}
+    key_param = f"&key={urllib.parse.quote(POLLINATIONS_API_KEY)}" if POLLINATIONS_API_KEY else ""
+
     if reference_image_url:
         # مدل kontext: تصویر جدید رو بر اساس عکس مرجع + توضیح متنی می‌سازه — نیاز به API Key داره
         if not POLLINATIONS_API_KEY:
             return None, "برای ساخت عکس بر اساس عکس مرجع، باید متغیر POLLINATIONS_API_KEY رو در Render تنظیم کنی (رایگان از enter.pollinations.ai)."
         encoded_ref = urllib.parse.quote(reference_image_url, safe="")
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=kontext&image={encoded_ref}&width=1024&height=1024&seed={seed}&nologo=true"
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=kontext&image={encoded_ref}&width=1024&height=1024&seed={seed}&nologo=true{key_param}"
         headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
     else:
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true{key_param}"
         if POLLINATIONS_API_KEY:
             headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
 
