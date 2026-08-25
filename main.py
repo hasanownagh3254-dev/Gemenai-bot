@@ -20,6 +20,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رایگان Google AI Studio (فعلاً استفاده نمی‌شه)
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()  # برای سرچ در اینترنت
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خواندن سند (اختیاری؛ بدون کلید هم با محدودیت کمتر کار می‌کنه)
+POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()  # لازم برای مدل kontext (ساخت عکس بر اساس عکس مرجع)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -441,15 +442,21 @@ TELEGRAM_MAX_LEN = 4000  # کمی کمتر از ۴۰۹۶ برای اطمینان
 def generate_image(prompt, reference_image_url=None):
     encoded_prompt = urllib.parse.quote(prompt)
     seed = random.randint(1, 1_000_000)
+    headers = {}
     if reference_image_url:
-        # مدل kontext: تصویر جدید رو بر اساس عکس مرجع + توضیح متنی می‌سازه
+        # مدل kontext: تصویر جدید رو بر اساس عکس مرجع + توضیح متنی می‌سازه — نیاز به API Key داره
+        if not POLLINATIONS_API_KEY:
+            return None, "برای ساخت عکس بر اساس عکس مرجع، باید متغیر POLLINATIONS_API_KEY رو در Render تنظیم کنی (رایگان از enter.pollinations.ai)."
         encoded_ref = urllib.parse.quote(reference_image_url, safe="")
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=kontext&image={encoded_ref}&width=1024&height=1024&seed={seed}&nologo=true"
+        headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
     else:
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
+        if POLLINATIONS_API_KEY:
+            headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
 
     try:
-        response = requests.get(url, timeout=60)
+        response = requests.get(url, headers=headers, timeout=60)
     except Exception as e:
         print(f"Image generation request error: {e}")
         return None, f"خطای ارتباطی: {str(e)}"
