@@ -2,12 +2,15 @@ import os
 import re
 import json
 import time
+import asyncio
+import uuid
 import threading
 import base64
 import random
 import urllib.parse
 import requests
 import telebot
+import edge_tts
 from telebot import types
 from flask import Flask
 
@@ -44,14 +47,19 @@ SYSTEM_PROMPT = "You are a helpful AI assistant that answers in the user's langu
 BTN_START_CHAT = "🟢 شروع گفتگو"
 BTN_IMAGE = "🖼 ساخت عکس"
 BTN_STT = "🎙 ویس به متن"
+BTN_TTS = "🔊 متن به گفتار"
 BTN_SEARCH = "🔎 سرچ در اینترنت"
 BTN_DOC = "📄 خواندن سند"
-# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت سرچ / حالت سند
+# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت متن به گفتار / حالت سرچ / حالت سند
 BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 BTN_END_STT = "🔴 پایان ویس به متن"
+BTN_END_TTS = "🔴 پایان متن به گفتار"
 BTN_END_SEARCH = "🔴 پایان سرچ"
 BTN_END_DOC = "🔴 پایان خواندن سند"
+
+# صدای پیش‌فرض برای تبدیل متن به گفتار (edge-tts) — فارسی، زن
+TTS_VOICE = "fa-IR-DilaraNeural"
 
 # متن دکمه‌های انتخاب مدل (کیبورد پایین صفحه) → آیدی مدل
 MODEL_BUTTON_TEXTS = {f"{opt['label']} — {opt['desc']}": opt["id"] for opt in CHAT_MODEL_OPTIONS}
@@ -101,7 +109,7 @@ def main_menu_keyboard():
     - از ۵ دکمه به بالا: سه ستون (سه‌تا-سه‌تا) تا فضای کمتری بگیره
     اگه تعداد دکمه‌ها بخش‌پذیر نباشه، آخرین ردیف با تعداد کمتر پر می‌شه.
     """
-    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_SEARCH, BTN_DOC]  # هر قابلیت جدید رو همینجا اضافه کن
+    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -126,6 +134,12 @@ def image_active_keyboard():
 def stt_active_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_STT))
+    return keyboard
+
+
+def tts_active_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(BTN_END_TTS))
     return keyboard
 
 
@@ -311,6 +325,28 @@ def transcribe_voice(audio_bytes, filename="voice.ogg"):
             return f"❌ خطای Groq (کد {response.status_code}): {err_msg}"
     except Exception as e:
         return f"❌ خطای ارتباطی: {str(e)}"
+
+
+# ۳ج. تبدیل متن به گفتار با edge-tts (رایگان، بدون کلید، فارسی هم پشتیبانی می‌کنه)
+async def _generate_speech_async(text, voice, output_path):
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(output_path)
+
+
+def generate_speech(text, voice=TTS_VOICE):
+    max_chars = 3000
+    text = text[:max_chars]
+    output_path = f"/tmp/tts_{uuid.uuid4().hex}.mp3"
+    try:
+        asyncio.run(_generate_speech_async(text, voice, output_path))
+        with open(output_path, "rb") as f:
+            audio_bytes = f.read()
+        return audio_bytes, None
+    except Exception as e:
+        return None, str(e)
+    finally:
+        if os.path.exists(output_path):
+            os.remove(output_path)
 
 
 # ۳د. سرچ واقعی در وب با Tavily (نتیجه شامل خلاصه‌ی آماده + لینک منابع)
@@ -531,6 +567,7 @@ def handle_start(message):
         "🟢 شروع گفتگو: گفتگوی آزاد با هوش مصنوعی (متن و عکس)، با حفظ تاریخچه.\n"
         "🖼 ساخت عکس: از روی توضیح متنی، عکس می‌سازم.\n"
         "🎙 ویس به متن: ویس بفرست، متنش رو برات می‌نویسم.\n"
+        "🔊 متن به گفتار: متن بفرست، به فایل صوتی تبدیلش می‌کنم.\n"
         "🔎 سرچ در اینترنت: توی وب سرچ می‌کنم و خلاصه‌ی به‌روز با منابع می‌دم.\n"
         "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
@@ -646,6 +683,34 @@ def handle_end_stt_button(message):
     bot.send_message(
         chat_id,
         "🔴 حالت ویس به متن پایان یافت. از منوی زیر یکی رو انتخاب کن.",
+        reply_markup=main_menu_keyboard()
+    )
+
+
+# ۸ز۲. دکمه «متن به گفتار»
+@bot.message_handler(func=lambda message: message.text == BTN_TTS)
+def handle_tts_button(message):
+    if not check_membership_and_notify(message):
+        return
+
+    chat_id = message.chat.id
+    set_mode(chat_id, "tts")
+    bot.send_message(
+        chat_id,
+        "🔊 حالت متن به گفتار فعال شد. هر متنی بفرستی، به فایل صوتی تبدیلش می‌کنم.\n"
+        "برای خروج از این حالت، دکمه‌ی «پایان متن به گفتار» رو بزن.",
+        reply_markup=tts_active_keyboard()
+    )
+
+
+# ۸ز۳. دکمه «پایان متن به گفتار»
+@bot.message_handler(func=lambda message: message.text == BTN_END_TTS)
+def handle_end_tts_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(
+        chat_id,
+        "🔴 حالت متن به گفتار پایان یافت. از منوی زیر یکی رو انتخاب کن.",
         reply_markup=main_menu_keyboard()
     )
 
@@ -886,6 +951,21 @@ def handle_message(message):
             print(f"Error generating image: {e}")
             try:
                 bot.send_message(chat_id, f"❌ خطا در ساخت عکس: {str(e)}", reply_markup=image_active_keyboard())
+            except Exception:
+                pass
+
+    elif mode == "tts":
+        try:
+            bot.send_chat_action(chat_id, "record_voice")
+            audio_bytes, error = generate_speech(message.text)
+            if error:
+                bot.send_message(chat_id, f"❌ خطا در ساخت گفتار: {error}", reply_markup=tts_active_keyboard())
+            else:
+                bot.send_audio(chat_id, audio=audio_bytes, title="متن به گفتار", reply_markup=tts_active_keyboard())
+        except Exception as e:
+            print(f"Error generating speech: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ خطا در ساخت گفتار: {str(e)}", reply_markup=tts_active_keyboard())
             except Exception:
                 pass
 
