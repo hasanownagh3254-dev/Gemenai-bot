@@ -447,9 +447,24 @@ def generate_image(prompt, reference_image_url=None):
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=kontext&image={encoded_ref}&width=1024&height=1024&seed={seed}&nologo=true"
     else:
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
-    response = requests.get(url, timeout=60)
-    if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
-        return response.content
+
+    try:
+        response = requests.get(url, timeout=60)
+    except Exception as e:
+        print(f"Image generation request error: {e}")
+        return None, f"خطای ارتباطی: {str(e)}"
+
+    content_type = response.headers.get("content-type", "")
+    if response.status_code == 200 and content_type.startswith("image"):
+        return response.content, None
+
+    # لاگ کردن جزئیات دقیق برای عیب‌یابی (توی Render قابل مشاهده‌ست)
+    body_preview = response.text[:300] if not content_type.startswith("image") else "(باینری تصویر نامعتبر)"
+    print(f"Image generation failed — status={response.status_code}, content-type={content_type}, body={body_preview}")
+    error_detail = f"کد {response.status_code}"
+    if body_preview and not body_preview.startswith("(باینری"):
+        error_detail += f" — {body_preview}"
+    return None, error_detail
     return None
 
 
@@ -831,11 +846,11 @@ def handle_photo(message):
             file_info = bot.get_file(file_id)
             telegram_file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info.file_path}"
 
-            image_bytes = generate_image(message.caption, reference_image_url=telegram_file_url)
+            image_bytes, error_detail = generate_image(message.caption, reference_image_url=telegram_file_url)
             if image_bytes:
                 bot.send_photo(chat_id, photo=image_bytes, caption=f"🖼 {message.caption}", reply_markup=image_active_keyboard())
             else:
-                bot.send_message(chat_id, "❌ متاسفانه ساخت عکس با خطا مواجه شد. دوباره امتحان کن.", reply_markup=image_active_keyboard())
+                bot.send_message(chat_id, f"❌ ساخت عکس با خطا مواجه شد.\nجزئیات: {error_detail}", reply_markup=image_active_keyboard())
         except Exception as e:
             print(f"Error generating image from reference: {e}")
             try:
@@ -980,11 +995,11 @@ def handle_message(message):
     elif mode == "image":
         try:
             bot.send_chat_action(chat_id, "upload_photo")
-            image_bytes = generate_image(message.text)
+            image_bytes, error_detail = generate_image(message.text)
             if image_bytes:
                 bot.send_photo(chat_id, photo=image_bytes, caption=f"🖼 {message.text}", reply_markup=image_active_keyboard())
             else:
-                bot.send_message(chat_id, "❌ متاسفانه ساخت عکس با خطا مواجه شد. دوباره امتحان کن.", reply_markup=image_active_keyboard())
+                bot.send_message(chat_id, f"❌ ساخت عکس با خطا مواجه شد.\nجزئیات: {error_detail}", reply_markup=image_active_keyboard())
         except Exception as e:
             print(f"Error generating image: {e}")
             try:
