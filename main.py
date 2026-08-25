@@ -14,7 +14,9 @@ from flask import Flask
 # ۱. دریافت کلیدها از Environment
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رایگان Google AI Studio
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رایگان Google AI Studio (فعلاً استفاده نمی‌شه)
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()  # برای سرچ در اینترنت
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خواندن سند (اختیاری؛ بدون کلید هم با محدودیت کمتر کار می‌کنه)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -22,12 +24,6 @@ app = Flask(__name__)
 # مدل گفتگوی عادی (پیش‌فرض، اگه کاربر مدلی انتخاب نکرده باشه)
 VISION_MODEL_NAME = "qwen/qwen3.6-27b"  # مدل ویژن Groq برای پردازش عکس
 STT_MODEL_NAME = "whisper-large-v3-turbo"  # مدل تبدیل ویس به متن (چندزبانه، فارسی هم پشتیبانی می‌کنه)
-
-# مدل Gemini برای قابلیت‌های سرچ، خواندن سند، و تحلیل ویدیو
-# "gemini-flash-latest" یک alias است که همیشه به آخرین نسخه‌ی پایدار Flash گوگل اشاره می‌کنه
-# طبق پیام خود Google API، gemini-2.5-flash برای کاربران جدید دیگه در دسترس نیست؛
-# gemini-3.6-flash مدل فعلی توصیه‌شده است.
-GEMINI_MODEL = "gemini-3.6-flash"
 
 # مدل‌های قابل انتخاب برای حالت گفتگو — با زدن «شروع گفتگو» کاربر از بین این‌ها انتخاب می‌کنه
 # نکته: مدل‌های groq/compound و groq/compound-mini (که خودشون سرچ می‌کردن) به‌خاطر
@@ -50,14 +46,12 @@ BTN_IMAGE = "🖼 ساخت عکس"
 BTN_STT = "🎙 ویس به متن"
 BTN_SEARCH = "🔎 سرچ در اینترنت"
 BTN_DOC = "📄 خواندن سند"
-BTN_VIDEO = "🎥 تحلیل ویدیو"
-# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت سرچ / حالت سند / حالت ویدیو
+# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت سرچ / حالت سند
 BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 BTN_END_STT = "🔴 پایان ویس به متن"
 BTN_END_SEARCH = "🔴 پایان سرچ"
 BTN_END_DOC = "🔴 پایان خواندن سند"
-BTN_END_VIDEO = "🔴 پایان تحلیل ویدیو"
 
 # متن دکمه‌های انتخاب مدل (کیبورد پایین صفحه) → آیدی مدل
 MODEL_BUTTON_TEXTS = {f"{opt['label']} — {opt['desc']}": opt["id"] for opt in CHAT_MODEL_OPTIONS}
@@ -107,7 +101,7 @@ def main_menu_keyboard():
     - از ۵ دکمه به بالا: سه ستون (سه‌تا-سه‌تا) تا فضای کمتری بگیره
     اگه تعداد دکمه‌ها بخش‌پذیر نباشه، آخرین ردیف با تعداد کمتر پر می‌شه.
     """
-    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_SEARCH, BTN_DOC, BTN_VIDEO]  # هر قابلیت جدید رو همینجا اضافه کن
+    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_SEARCH, BTN_DOC]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -144,12 +138,6 @@ def search_active_keyboard():
 def doc_active_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_DOC))
-    return keyboard
-
-
-def video_active_keyboard():
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.row(types.KeyboardButton(BTN_END_VIDEO))
     return keyboard
 
 
@@ -325,102 +313,87 @@ def transcribe_voice(audio_bytes, filename="voice.ogg"):
         return f"❌ خطای ارتباطی: {str(e)}"
 
 
-# ۳د. تابع کمکی برای فراخوانی امن API جمنای (Google AI Studio)
-def call_gemini_api(payload, timeout=60, max_retries=2):
-    if not GEMINI_API_KEY:
-        return "❌ خطا: متغیر GEMINI_API_KEY در Render تنظیم نشده است."
+# ۳د. سرچ واقعی در وب با Tavily (نتیجه شامل خلاصه‌ی آماده + لینک منابع)
+def ask_tavily_search(query):
+    if not TAVILY_API_KEY:
+        return "❌ خطا: متغیر TAVILY_API_KEY در Render تنظیم نشده است."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-
-    last_error_text = None
-    for attempt in range(max_retries + 1):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            response.encoding = "utf-8"
-            data = json.loads(response.text)
-        except Exception as e:
-            return f"❌ خطای ارتباطی: {str(e)}"
-
-        if response.status_code == 200:
-            try:
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    return "(پاسخی دریافت نشد — احتمالاً محتوا توسط فیلترهای ایمنی گوگل رد شده)"
-                parts = candidates[0].get("content", {}).get("parts", [])
-                text = "".join(p.get("text", "") for p in parts).strip()
-                return text if text else "(پاسخی دریافت نشد)"
-            except Exception:
-                return "❌ خطا در پردازش پاسخ Gemini."
-
-        elif response.status_code == 429:
-            err_msg = data.get("error", {}).get("message", response.text)
-            print(f"Gemini 429 detail: {err_msg}")
-            return (
-                "❌ سرویس Gemini موقتاً شلوغه (محدودیت نرخ رایگان). چند لحظه صبر کن و دوباره امتحان کن.\n"
-                f"جزئیات فنی: {err_msg}"
-            )
-
-        elif response.status_code in (503, 500) and attempt < max_retries:
-            # خطای موقتی سمت گوگل (شلوغی سرویس) — چند ثانیه صبر و تلاش مجدد
-            last_error_text = data.get("error", {}).get("message", response.text)
-            print(f"Gemini {response.status_code} — retry {attempt + 1}/{max_retries}: {last_error_text}")
-            time.sleep(3)
-            continue
-
-        else:
-            err_msg = data.get("error", {}).get("message", response.text)
-            return f"❌ خطای Gemini (کد {response.status_code}): {err_msg}"
-
-    return f"❌ سرویس Gemini بعد از چند تلاش هم پاسخ نداد (شلوغی موقت سرویس). چند دقیقه دیگه دوباره امتحان کن.\nجزئیات: {last_error_text}"
-
-
-# ۳ه. سرچ واقعی در وب با قابلیت Google Search Grounding
-def ask_gemini_search(query):
+    url = "https://api.tavily.com/search"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {TAVILY_API_KEY}"}
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": query}]}],
-        "tools": [{"google_search": {}}],
-        "system_instruction": {
-            "parts": [{"text": "You answer in Persian. Use Google Search to find current, accurate information before answering. Keep the answer clear and well-organized."}]
-        }
+        "query": query,
+        "search_depth": "advanced",
+        "include_answer": "advanced",
+        "max_results": 5
     }
-    return call_gemini_api(payload, timeout=45)
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.encoding = "utf-8"
+        data = json.loads(response.text)
+    except Exception as e:
+        return f"❌ خطای ارتباطی: {str(e)}"
+
+    if response.status_code != 200:
+        err_msg = data.get("error", data.get("detail", response.text))
+        return f"❌ خطای Tavily (کد {response.status_code}): {err_msg}"
+
+    answer = (data.get("answer") or "").strip()
+    results = data.get("results", [])[:3]
+
+    parts = []
+    if answer:
+        parts.append(answer)
+    if results:
+        sources = "\n".join(f"🔗 {r.get('title', 'منبع')}: {r.get('url', '')}" for r in results)
+        parts.append("منابع:\n" + sources)
+
+    return "\n\n".join(parts) if parts else "(چیزی پیدا نشد)"
 
 
-# ۳و. خواندن و خلاصه‌سازی سند (PDF و امثال آن)
-def ask_gemini_document(file_bytes, mime_type, question):
-    b64_data = base64.b64encode(file_bytes).decode("utf-8")
+# ۳ه. تبدیل PDF به متن با Jina Reader (بدون نیاز به دانلود فایل روی سرور خودمون)
+def read_pdf_via_jina(telegram_file_url):
+    jina_url = f"https://r.jina.ai/{telegram_file_url}"
+    headers = {}
+    if JINA_API_KEY:
+        headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+
+    try:
+        response = requests.get(jina_url, headers=headers, timeout=60)
+        response.encoding = "utf-8"
+    except Exception as e:
+        return None, f"❌ خطای ارتباطی با Jina Reader: {str(e)}"
+
+    if response.status_code != 200:
+        return None, f"❌ خطای Jina Reader (کد {response.status_code}): {response.text[:300]}"
+
+    return response.text, None
+
+
+# ۳و. خلاصه‌سازی/پاسخ‌گویی درباره‌ی متن استخراج‌شده از سند، با مدل سریع Groq
+def summarize_document_text(document_text, question):
+    if not GROQ_API_KEY:
+        return "❌ خطا: متغیر GROQ_API_KEY در Render تنظیم نشده است."
+
+    # سند رو کمی کوتاه می‌کنیم تا از محدودیت توکن رد نشیم
+    max_chars = 20000
+    trimmed = document_text[:max_chars]
+
+    prompt = f"متن زیر از یک سند استخراج شده:\n\n{trimmed}\n\n---\n\nبراساس این متن، به فارسی جواب بده: {question}"
     payload = {
-        "contents": [{
-            "role": "user",
-            "parts": [
-                {"inline_data": {"mime_type": mime_type, "data": b64_data}},
-                {"text": question}
-            ]
-        }],
-        "system_instruction": {
-            "parts": [{"text": "You answer in Persian based on the document content provided."}]
-        }
+        "model": "openai/gpt-oss-20b",
+        "messages": [
+            {"role": "system", "content": "You answer in Persian based only on the document text provided by the user."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.5,
+        "max_tokens": 1024,
+        "reasoning_format": "hidden"
     }
-    return call_gemini_api(payload, timeout=60)
-
-
-# ۳ز. تحلیل و توضیح ویدیو
-def ask_gemini_video(file_bytes, mime_type, question):
-    b64_data = base64.b64encode(file_bytes).decode("utf-8")
-    payload = {
-        "contents": [{
-            "role": "user",
-            "parts": [
-                {"inline_data": {"mime_type": mime_type, "data": b64_data}},
-                {"text": question}
-            ]
-        }],
-        "system_instruction": {
-            "parts": [{"text": "You answer in Persian based on the video content provided."}]
-        }
-    }
-    return call_gemini_api(payload, timeout=90)
+    try:
+        return call_groq_api(payload, timeout=30)
+    except Exception as e:
+        return f"❌ خطای ارتباطی: {str(e)}"
 
 
 # ۴. تابع کمکی برای پاکسازی و تقسیم پیام‌های طولانی (محدودیت تلگرام: ۴۰۹۶ کاراکتر)
@@ -558,9 +531,8 @@ def handle_start(message):
         "🟢 شروع گفتگو: گفتگوی آزاد با هوش مصنوعی (متن و عکس)، با حفظ تاریخچه.\n"
         "🖼 ساخت عکس: از روی توضیح متنی، عکس می‌سازم.\n"
         "🎙 ویس به متن: ویس بفرست، متنش رو برات می‌نویسم.\n"
-        "🔎 سرچ در اینترنت: با گوگل واقعی سرچ می‌کنم و خلاصه‌ی به‌روز می‌دم.\n"
-        "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n"
-        "🎥 تحلیل ویدیو: یک ویدیو بفرست، توضیحش می‌دم.\n\n"
+        "🔎 سرچ در اینترنت: توی وب سرچ می‌کنم و خلاصه‌ی به‌روز با منابع می‌دم.\n"
+        "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
@@ -689,7 +661,7 @@ def handle_search_button(message):
     bot.send_message(
         chat_id,
         "🔎 حالت سرچ در اینترنت فعال شد. هر چی می‌خوای درباره‌ش جستجو کنم رو بنویس؛ "
-        "با گوگل واقعی سرچ می‌کنم و خلاصه‌ی به‌روزش رو می‌فرستم.\n"
+        "توی وب سرچ می‌کنم و خلاصه‌ی به‌روزش رو با منابع می‌فرستم.\n"
         "برای خروج از این حالت، دکمه‌ی «پایان سرچ» رو بزن.",
         reply_markup=search_active_keyboard()
     )
@@ -731,34 +703,6 @@ def handle_end_doc_button(message):
     bot.send_message(
         chat_id,
         "🔴 حالت خواندن سند پایان یافت. از منوی زیر یکی رو انتخاب کن.",
-        reply_markup=main_menu_keyboard()
-    )
-
-
-# ۸ل. دکمه «تحلیل ویدیو»
-@bot.message_handler(func=lambda message: message.text == BTN_VIDEO)
-def handle_video_button(message):
-    if not check_membership_and_notify(message):
-        return
-
-    chat_id = message.chat.id
-    set_mode(chat_id, "video")
-    bot.send_message(
-        chat_id,
-        "🎥 حالت تحلیل ویدیو فعال شد. یک ویدیوی کوتاه بفرست (تا ۲۰ مگابایت) — می‌تونی توی کپشن سوالت "
-        "رو هم بنویسی، وگرنه خودم توضیحش می‌دم.\nبرای خروج از این حالت، دکمه‌ی «پایان تحلیل ویدیو» رو بزن.",
-        reply_markup=video_active_keyboard()
-    )
-
-
-# ۸م. دکمه «پایان تحلیل ویدیو»
-@bot.message_handler(func=lambda message: message.text == BTN_END_VIDEO)
-def handle_end_video_button(message):
-    chat_id = message.chat.id
-    set_mode(chat_id, None)
-    bot.send_message(
-        chat_id,
-        "🔴 حالت تحلیل ویدیو پایان یافت. از منوی زیر یکی رو انتخاب کن.",
         reply_markup=main_menu_keyboard()
     )
 
@@ -875,7 +819,6 @@ def handle_document(message):
         return
 
     doc = message.document
-    mime_type = doc.mime_type or "application/pdf"
 
     # فایل‌های خیلی بزرگ رو Bot API تلگرام اصلاً اجازه‌ی دانلود نمی‌ده (سقف ۲۰ مگابایت)
     if doc.file_size and doc.file_size > 20 * 1024 * 1024:
@@ -885,11 +828,17 @@ def handle_document(message):
     try:
         bot.send_chat_action(chat_id, "typing")
 
+        # به‌جای دانلود فایل روی سرور خودمون، فقط لینک فایل تلگرام رو به Jina Reader می‌دیم
         file_info = bot.get_file(doc.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
+        telegram_file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info.file_path}"
+
+        document_text, error = read_pdf_via_jina(telegram_file_url)
+        if error:
+            bot.send_message(chat_id, error, reply_markup=doc_active_keyboard())
+            return
 
         question = message.caption if message.caption else "این سند رو خلاصه کن و نکات مهمش رو بگو."
-        reply = ask_gemini_document(downloaded_file, mime_type, question)
+        reply = summarize_document_text(document_text, question)
         send_long_message(message, reply, reply_markup=doc_active_keyboard())
     except Exception as e:
         print(f"Error handling document: {e}")
@@ -899,51 +848,12 @@ def handle_document(message):
             pass
 
 
-# ۹د. دریافت و پردازش ویدیو — فقط در حالت «تحلیل ویدیو»
-@bot.message_handler(content_types=['video'])
-def handle_video(message):
-    chat_id = message.chat.id
-
-    if not check_membership_and_notify(message):
-        return
-
-    if get_mode(chat_id) != "video":
-        bot.send_message(
-            chat_id,
-            "برای تحلیل ویدیو، اول باید وارد حالت «تحلیل ویدیو» بشی 👇",
-            reply_markup=main_menu_keyboard()
-        )
-        return
-
-    video = message.video
-    mime_type = video.mime_type or "video/mp4"
-
-    if video.file_size and video.file_size > 20 * 1024 * 1024:
-        bot.send_message(chat_id, "❌ حجم ویدیو بیش از ۲۰ مگابایته و قابل پردازش نیست.", reply_markup=video_active_keyboard())
-        return
-
-    try:
-        bot.send_chat_action(chat_id, "typing")
-
-        file_info = bot.get_file(video.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-
-        question = message.caption if message.caption else "این ویدیو رو توضیح بده و خلاصه‌ش کن."
-        reply = ask_gemini_video(downloaded_file, mime_type, question)
-        send_long_message(message, reply, reply_markup=video_active_keyboard())
-    except Exception as e:
-        print(f"Error handling video: {e}")
-        try:
-            bot.send_message(chat_id, f"❌ خطا در پردازش ویدیو: {str(e)}", reply_markup=video_active_keyboard())
-        except Exception:
-            pass
-
-
 # ۱۰. دریافت و پاسخ به پیام‌های متنی — رفتار بسته به حالت فعلی (منو / انتخاب مدل / گفتگو / ساخت عکس)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     if not message.text:
         return
+
 
     chat_id = message.chat.id
 
@@ -982,7 +892,7 @@ def handle_message(message):
     elif mode == "search":
         try:
             bot.send_chat_action(chat_id, "typing")
-            reply = ask_gemini_search(message.text)
+            reply = ask_tavily_search(message.text)
             send_long_message(message, reply, reply_markup=search_active_keyboard())
         except Exception as e:
             print(f"Error handling search: {e}")
@@ -993,9 +903,6 @@ def handle_message(message):
 
     elif mode == "doc":
         bot.send_message(chat_id, "📄 لطفاً یک فایل PDF بفرست، نه متن.", reply_markup=doc_active_keyboard())
-
-    elif mode == "video":
-        bot.send_message(chat_id, "🎥 لطفاً یک ویدیو بفرست، نه متن.", reply_markup=video_active_keyboard())
 
     elif mode == "choosing_model":
         bot.send_message(
