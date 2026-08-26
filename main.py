@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import io
 import asyncio
 import uuid
 import threading
@@ -11,6 +12,9 @@ import urllib.parse
 import requests
 import telebot
 import edge_tts
+import numpy as np
+import cv2
+from PIL import Image, ImageFilter
 from telebot import types
 from flask import Flask
 
@@ -21,7 +25,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رای
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()  # برای سرچ در اینترنت
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خواندن سند (اختیاری؛ بدون کلید هم با محدودیت کمتر کار می‌کنه)
 POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()  # لازم برای مدل kontext (ساخت عکس بر اساس عکس مرجع)
-DEEPAI_API_KEY = os.environ.get("DEEPAI_API_KEY", "").strip()  # برای افزایش کیفیت عکس با waifu2x
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -61,6 +64,16 @@ BTN_END_TTS = "🔴 پایان متن به گفتار"
 BTN_END_SEARCH = "🔴 پایان سرچ"
 BTN_END_DOC = "🔴 پایان خواندن سند"
 BTN_END_UPSCALE = "🔴 پایان افزایش کیفیت"
+
+# روش‌های افزایش کیفیت عکس — کاربر با زدن دکمه‌ی «افزایش کیفیت عکس» یکی رو انتخاب می‌کنه
+UPSCALE_METHOD_OPTIONS = [
+    {"id": "pillow", "label": "🅿️ Pillow (شارپ)", "desc": "بزرگ‌نمایی + فیلتر شارپ‌کننده"},
+    {"id": "opencv", "label": "🅾️ OpenCV (Cubic)", "desc": "بزرگ‌نمایی هوشمند با درون‌یابی Cubic"},
+    {"id": "combo", "label": "🔀 ترکیبی (هر دو)", "desc": "بزرگ‌نمایی OpenCV + شارپ Pillow"},
+]
+DEFAULT_UPSCALE_METHOD = "combo"
+UPSCALE_METHOD_CHOICE = {}  # chat_id -> method id
+UPSCALE_METHOD_BUTTON_TEXTS = {f"{opt['label']} — {opt['desc']}": opt["id"] for opt in UPSCALE_METHOD_OPTIONS}
 
 # صدای پیش‌فرض برای تبدیل متن به گفتار (edge-tts) — فارسی، زن
 TTS_VOICE = "fa-IR-DilaraNeural"
@@ -162,6 +175,13 @@ def doc_active_keyboard():
 def upscale_active_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_UPSCALE))
+    return keyboard
+
+
+def upscale_method_selection_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for button_text in UPSCALE_METHOD_BUTTON_TEXTS:
+        keyboard.row(types.KeyboardButton(button_text))
     return keyboard
 
 
@@ -514,37 +534,57 @@ def generate_image_from_reference(image_bytes, prompt, filename="input.jpg"):
     return None, f"کد {response.status_code} — {body_preview}"
 
 
-# ۳ل. افزایش کیفیت عکس (Upscale) با مدل waifu2x از طریق DeepAI
-def upscale_image_deepai(image_bytes, filename="image.jpg"):
-    if not DEEPAI_API_KEY:
-        return None, "برای افزایش کیفیت عکس، باید متغیر DEEPAI_API_KEY رو در Render تنظیم کنی (رایگان از deepai.org)."
+# ۳ل. افزایش کیفیت عکس با کتابخونه‌های محلی Pillow و OpenCV (رایگان، بدون کلید، اجرا روی خود سرور)
+def _upscale_with_pillow(image_bytes, scale=2):
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    new_size = (img.width * scale, img.height * scale)
+    img = img.resize(new_size, Image.LANCZOS)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    output = io.BytesIO()
+    img.save(output, format="PNG")
+    return output.getvalue()
 
-    url = "https://api.deepai.org/api/waifu2x"
-    headers = {"api-key": DEEPAI_API_KEY}
-    files = {"image": (filename, image_bytes)}
 
+def _upscale_with_opencv(image_bytes, scale=2):
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    new_size = (img.shape[1] * scale, img.shape[0] * scale)
+    resized = cv2.resize(img, new_size, interpolation=cv2.INTER_CUBIC)
+    success, buffer = cv2.imencode(".png", resized)
+    if not success:
+        return None
+    return buffer.tobytes()
+
+
+def _apply_pillow_sharpen_only(image_bytes):
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    output = io.BytesIO()
+    img.save(output, format="PNG")
+    return output.getvalue()
+
+
+def upscale_image(image_bytes, method="combo", scale=2):
     try:
-        response = requests.post(url, headers=headers, files=files, timeout=60)
+        if method == "pillow":
+            return _upscale_with_pillow(image_bytes, scale), None
+
+        elif method == "opencv":
+            result = _upscale_with_opencv(image_bytes, scale)
+            if result is None:
+                return None, "عکس قابل خواندن نبود (فرمت پشتیبانی‌نشده یا فایل خراب)."
+            return result, None
+
+        else:  # combo: بزرگ‌نمایی هوشمند OpenCV + شارپ‌کردن Pillow
+            resized = _upscale_with_opencv(image_bytes, scale)
+            if resized is None:
+                return None, "عکس قابل خواندن نبود (فرمت پشتیبانی‌نشده یا فایل خراب)."
+            return _apply_pillow_sharpen_only(resized), None
     except Exception as e:
-        print(f"DeepAI upscale request error: {e}")
-        return None, f"خطای ارتباطی: {str(e)}"
-
-    if response.status_code == 200:
-        try:
-            result = response.json()
-            output_url = result.get("output_url")
-            if not output_url:
-                return None, f"پاسخ نامعتبر از DeepAI: {str(result)[:300]}"
-            img_resp = requests.get(output_url, timeout=60)
-            if img_resp.status_code == 200:
-                return img_resp.content, None
-            return None, f"خطا در دانلود نتیجه (کد {img_resp.status_code})"
-        except Exception as e:
-            return None, f"خطا در پردازش پاسخ: {str(e)} — {response.text[:300]}"
-
-    body_preview = response.text[:300]
-    print(f"DeepAI upscale failed — status={response.status_code}, body={body_preview}")
-    return None, f"کد {response.status_code} — {body_preview}"
+        print(f"Local upscale error: {e}")
+        return None, f"خطا در پردازش عکس: {str(e)}"
 
 
 def clean_text(text):
@@ -873,17 +913,36 @@ def handle_end_doc_button(message):
     )
 
 
-# ۸ک۲. دکمه «افزایش کیفیت عکس»
+# ۸ک۲. دکمه «افزایش کیفیت عکس» — اول انتخاب روش رو نشون می‌ده
 @bot.message_handler(func=lambda message: message.text == BTN_UPSCALE)
 def handle_upscale_button(message):
     if not check_membership_and_notify(message):
         return
 
     chat_id = message.chat.id
-    set_mode(chat_id, "upscale")
+    set_mode(chat_id, "choosing_upscale_method")
     bot.send_message(
         chat_id,
-        "🔍 حالت افزایش کیفیت عکس فعال شد. یک عکس بفرست تا کیفیت و رزولوشنش رو افزایش بدم.\n"
+        "🔍 با کدوم روش می‌خوای کیفیت عکس رو افزایش بدم؟ 👇",
+        reply_markup=upscale_method_selection_keyboard()
+    )
+
+
+# ۸ک۲ب. انتخاب روش افزایش کیفیت از کیبورد پایین صفحه
+@bot.message_handler(func=lambda message: message.text in UPSCALE_METHOD_BUTTON_TEXTS)
+def handle_select_upscale_method(message):
+    chat_id = message.chat.id
+    if get_mode(chat_id) != "choosing_upscale_method":
+        return  # این دکمه‌ها فقط توی حالت انتخاب روش معتبرن
+
+    method_id = UPSCALE_METHOD_BUTTON_TEXTS[message.text]
+    UPSCALE_METHOD_CHOICE[chat_id] = method_id
+    set_mode(chat_id, "upscale")
+
+    method_label = next(o["label"] for o in UPSCALE_METHOD_OPTIONS if o["id"] == method_id)
+    bot.send_message(
+        chat_id,
+        f"✅ روش {method_label} انتخاب شد. یک عکس بفرست تا کیفیت و رزولوشنش رو افزایش بدم.\n"
         "برای خروج از این حالت، دکمه‌ی «پایان افزایش کیفیت» رو بزن.",
         reply_markup=upscale_active_keyboard()
     )
@@ -975,7 +1034,8 @@ def handle_photo(message):
             file_info = bot.get_file(file_id)
             downloaded_file = bot.download_file(file_info.file_path)
 
-            image_bytes, error_detail = upscale_image_deepai(downloaded_file)
+            method = UPSCALE_METHOD_CHOICE.get(chat_id, DEFAULT_UPSCALE_METHOD)
+            image_bytes, error_detail = upscale_image(downloaded_file, method=method)
             if image_bytes:
                 bot.send_photo(chat_id, photo=image_bytes, caption="🔍 کیفیت افزایش یافت", reply_markup=upscale_active_keyboard())
             else:
@@ -1174,6 +1234,13 @@ def handle_message(message):
             chat_id,
             "لطفاً یکی از دکمه‌های مدل رو از کیبورد پایین انتخاب کن 👇",
             reply_markup=model_selection_keyboard()
+        )
+
+    elif mode == "choosing_upscale_method":
+        bot.send_message(
+            chat_id,
+            "لطفاً یکی از روش‌های افزایش کیفیت رو از کیبورد پایین انتخاب کن 👇",
+            reply_markup=upscale_method_selection_keyboard()
         )
 
     else:
