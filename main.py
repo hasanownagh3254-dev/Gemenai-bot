@@ -439,26 +439,13 @@ TELEGRAM_MAX_LEN = 4000  # کمی کمتر از ۴۰۹۶ برای اطمینان
 
 # ۳د. ساخت عکس از روی توضیح متنی با سرویس رایگان Pollinations.ai (بدون نیاز به API Key)
 # نکته: این سرویس جدا از Groq است، چون Groq مدل ساخت عکس (Text-to-Image) ندارد.
-def generate_image(prompt, reference_image_url=None):
+def generate_image(prompt):
     encoded_prompt = urllib.parse.quote(prompt)
     seed = random.randint(1, 1_000_000)
-    headers = {}
-    key_param = f"&key={urllib.parse.quote(POLLINATIONS_API_KEY)}" if POLLINATIONS_API_KEY else ""
-
-    if reference_image_url:
-        # مدل kontext: تصویر جدید رو بر اساس عکس مرجع + توضیح متنی می‌سازه — نیاز به API Key داره
-        if not POLLINATIONS_API_KEY:
-            return None, "برای ساخت عکس بر اساس عکس مرجع، باید متغیر POLLINATIONS_API_KEY رو در Render تنظیم کنی (رایگان از enter.pollinations.ai)."
-        encoded_ref = urllib.parse.quote(reference_image_url, safe="")
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=kontext&image={encoded_ref}&width=1024&height=1024&seed={seed}&nologo=true{key_param}"
-        headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
-    else:
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true{key_param}"
-        if POLLINATIONS_API_KEY:
-            headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
 
     try:
-        response = requests.get(url, headers=headers, timeout=60)
+        response = requests.get(url, timeout=60)
     except Exception as e:
         print(f"Image generation request error: {e}")
         return None, f"خطای ارتباطی: {str(e)}"
@@ -474,6 +461,48 @@ def generate_image(prompt, reference_image_url=None):
     if body_preview and not body_preview.startswith("(باینری"):
         error_detail += f" — {body_preview}"
     return None, error_detail
+
+
+# ۳ک. ساخت عکس بر اساس عکس مرجع (مدل kontext) — طبق مستندات رسمی، باید فایل عکس مستقیم آپلود بشه
+# (نه فقط URL)، از endpoint جدید gen.pollinations.ai/v1/images/edits
+def generate_image_from_reference(image_bytes, prompt, filename="input.jpg"):
+    if not POLLINATIONS_API_KEY:
+        return None, "برای ساخت عکس بر اساس عکس مرجع، باید متغیر POLLINATIONS_API_KEY رو در Render تنظیم کنی (رایگان از enter.pollinations.ai)."
+
+    url = "https://gen.pollinations.ai/v1/images/edits"
+    headers = {"Authorization": f"Bearer {POLLINATIONS_API_KEY}"}
+    files = {"image": (filename, image_bytes)}
+    data = {"prompt": prompt, "model": "kontext"}
+
+    try:
+        response = requests.post(url, headers=headers, files=files, data=data, timeout=90)
+    except Exception as e:
+        print(f"Kontext request error: {e}")
+        return None, f"خطای ارتباطی: {str(e)}"
+
+    content_type = response.headers.get("content-type", "")
+
+    if response.status_code == 200:
+        # اگه مستقیم باینری تصویر برگردوند
+        if content_type.startswith("image"):
+            return response.content, None
+        # وگرنه طبق فرمت OpenAI-compatible، JSON با b64_json یا url برمی‌گردونه
+        try:
+            result = response.json()
+            item = result.get("data", [{}])[0]
+            if item.get("b64_json"):
+                return base64.b64decode(item["b64_json"]), None
+            if item.get("url"):
+                img_resp = requests.get(item["url"], timeout=60)
+                if img_resp.status_code == 200:
+                    return img_resp.content, None
+            return None, f"فرمت پاسخ ناشناخته: {str(result)[:300]}"
+        except Exception as e:
+            return None, f"خطا در پردازش پاسخ: {str(e)} — {response.text[:300]}"
+
+    body_preview = response.text[:300]
+    print(f"Kontext generation failed — status={response.status_code}, body={body_preview}")
+    return None, f"کد {response.status_code} — {body_preview}"
     return None
 
 
@@ -853,9 +882,9 @@ def handle_photo(message):
 
             file_id = message.photo[-1].file_id
             file_info = bot.get_file(file_id)
-            telegram_file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info.file_path}"
+            downloaded_file = bot.download_file(file_info.file_path)
 
-            image_bytes, error_detail = generate_image(message.caption, reference_image_url=telegram_file_url)
+            image_bytes, error_detail = generate_image_from_reference(downloaded_file, message.caption)
             if image_bytes:
                 bot.send_photo(chat_id, photo=image_bytes, caption=f"🖼 {message.caption}", reply_markup=image_active_keyboard())
             else:
