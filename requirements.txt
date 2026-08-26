@@ -2,3 +2,5 @@ pyTelegramBotAPI
 requests
 flask
 edge-tts
+Pillow
+opencv-python-headless
