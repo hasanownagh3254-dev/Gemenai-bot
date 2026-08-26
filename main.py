@@ -21,6 +21,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رای
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()  # برای سرچ در اینترنت
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خواندن سند (اختیاری؛ بدون کلید هم با محدودیت کمتر کار می‌کنه)
 POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()  # لازم برای مدل kontext (ساخت عکس بر اساس عکس مرجع)
+DEEPAI_API_KEY = os.environ.get("DEEPAI_API_KEY", "").strip()  # برای افزایش کیفیت عکس با waifu2x
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -51,13 +52,15 @@ BTN_STT = "🎙 ویس به متن"
 BTN_TTS = "🔊 متن به گفتار"
 BTN_SEARCH = "🔎 سرچ در اینترنت"
 BTN_DOC = "📄 خواندن سند"
-# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت متن به گفتار / حالت سرچ / حالت سند
+BTN_UPSCALE = "🔍 افزایش کیفیت عکس"
+# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت متن به گفتار / حالت سرچ / حالت سند / حالت افزایش کیفیت
 BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 BTN_END_STT = "🔴 پایان ویس به متن"
 BTN_END_TTS = "🔴 پایان متن به گفتار"
 BTN_END_SEARCH = "🔴 پایان سرچ"
 BTN_END_DOC = "🔴 پایان خواندن سند"
+BTN_END_UPSCALE = "🔴 پایان افزایش کیفیت"
 
 # صدای پیش‌فرض برای تبدیل متن به گفتار (edge-tts) — فارسی، زن
 TTS_VOICE = "fa-IR-DilaraNeural"
@@ -110,7 +113,7 @@ def main_menu_keyboard():
     - از ۵ دکمه به بالا: سه ستون (سه‌تا-سه‌تا) تا فضای کمتری بگیره
     اگه تعداد دکمه‌ها بخش‌پذیر نباشه، آخرین ردیف با تعداد کمتر پر می‌شه.
     """
-    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC]  # هر قابلیت جدید رو همینجا اضافه کن
+    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC, BTN_UPSCALE]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -153,6 +156,12 @@ def search_active_keyboard():
 def doc_active_keyboard():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row(types.KeyboardButton(BTN_END_DOC))
+    return keyboard
+
+
+def upscale_active_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(BTN_END_UPSCALE))
     return keyboard
 
 
@@ -503,7 +512,39 @@ def generate_image_from_reference(image_bytes, prompt, filename="input.jpg"):
     body_preview = response.text[:300]
     print(f"Kontext generation failed — status={response.status_code}, body={body_preview}")
     return None, f"کد {response.status_code} — {body_preview}"
-    return None
+
+
+# ۳ل. افزایش کیفیت عکس (Upscale) با مدل waifu2x از طریق DeepAI
+def upscale_image_deepai(image_bytes, filename="image.jpg"):
+    if not DEEPAI_API_KEY:
+        return None, "برای افزایش کیفیت عکس، باید متغیر DEEPAI_API_KEY رو در Render تنظیم کنی (رایگان از deepai.org)."
+
+    url = "https://api.deepai.org/api/waifu2x"
+    headers = {"api-key": DEEPAI_API_KEY}
+    files = {"image": (filename, image_bytes)}
+
+    try:
+        response = requests.post(url, headers=headers, files=files, timeout=60)
+    except Exception as e:
+        print(f"DeepAI upscale request error: {e}")
+        return None, f"خطای ارتباطی: {str(e)}"
+
+    if response.status_code == 200:
+        try:
+            result = response.json()
+            output_url = result.get("output_url")
+            if not output_url:
+                return None, f"پاسخ نامعتبر از DeepAI: {str(result)[:300]}"
+            img_resp = requests.get(output_url, timeout=60)
+            if img_resp.status_code == 200:
+                return img_resp.content, None
+            return None, f"خطا در دانلود نتیجه (کد {img_resp.status_code})"
+        except Exception as e:
+            return None, f"خطا در پردازش پاسخ: {str(e)} — {response.text[:300]}"
+
+    body_preview = response.text[:300]
+    print(f"DeepAI upscale failed — status={response.status_code}, body={body_preview}")
+    return None, f"کد {response.status_code} — {body_preview}"
 
 
 def clean_text(text):
@@ -627,7 +668,8 @@ def handle_start(message):
         "🎙 ویس به متن: ویس بفرست، متنش رو برات می‌نویسم.\n"
         "🔊 متن به گفتار: متن بفرست، به فایل صوتی تبدیلش می‌کنم.\n"
         "🔎 سرچ در اینترنت: توی وب سرچ می‌کنم و خلاصه‌ی به‌روز با منابع می‌دم.\n"
-        "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n\n"
+        "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n"
+        "🔍 افزایش کیفیت عکس: عکس بفرست، کیفیت و رزولوشنش رو بالا می‌برم.\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
@@ -831,6 +873,34 @@ def handle_end_doc_button(message):
     )
 
 
+# ۸ک۲. دکمه «افزایش کیفیت عکس»
+@bot.message_handler(func=lambda message: message.text == BTN_UPSCALE)
+def handle_upscale_button(message):
+    if not check_membership_and_notify(message):
+        return
+
+    chat_id = message.chat.id
+    set_mode(chat_id, "upscale")
+    bot.send_message(
+        chat_id,
+        "🔍 حالت افزایش کیفیت عکس فعال شد. یک عکس بفرست تا کیفیت و رزولوشنش رو افزایش بدم.\n"
+        "برای خروج از این حالت، دکمه‌ی «پایان افزایش کیفیت» رو بزن.",
+        reply_markup=upscale_active_keyboard()
+    )
+
+
+# ۸ک۳. دکمه «پایان افزایش کیفیت»
+@bot.message_handler(func=lambda message: message.text == BTN_END_UPSCALE)
+def handle_end_upscale_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(
+        chat_id,
+        "🔴 حالت افزایش کیفیت پایان یافت. از منوی زیر یکی رو انتخاب کن.",
+        reply_markup=main_menu_keyboard()
+    )
+
+
 # ۸د. دکمه شیشه‌ای «✅ عضو شدم» زیر پیام عضویت اجباری
 @bot.callback_query_handler(func=lambda call: call.data == CALLBACK_CHECK_JOIN)
 def handle_check_join(call):
@@ -897,10 +967,32 @@ def handle_photo(message):
                 pass
         return
 
+    if mode == "upscale":
+        try:
+            bot.send_chat_action(chat_id, "upload_photo")
+
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+
+            image_bytes, error_detail = upscale_image_deepai(downloaded_file)
+            if image_bytes:
+                bot.send_photo(chat_id, photo=image_bytes, caption="🔍 کیفیت افزایش یافت", reply_markup=upscale_active_keyboard())
+            else:
+                bot.send_message(chat_id, f"❌ افزایش کیفیت با خطا مواجه شد.\nجزئیات: {error_detail}", reply_markup=upscale_active_keyboard())
+        except Exception as e:
+            print(f"Error upscaling image: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ خطا در افزایش کیفیت: {str(e)}", reply_markup=upscale_active_keyboard())
+            except Exception:
+                pass
+        return
+
     if mode != "chat":
         bot.send_message(
             chat_id,
-            "برای ارسال عکس، اول باید وارد حالت «شروع گفتگو» (برای توصیف عکس) یا «ساخت عکس» (برای ساخت عکس جدید) بشی 👇",
+            "برای ارسال عکس، اول باید وارد حالت «شروع گفتگو» (برای توصیف عکس)، «ساخت عکس» (برای ساخت عکس جدید)، "
+            "یا «افزایش کیفیت عکس» بشی 👇",
             reply_markup=main_menu_keyboard()
         )
         return
@@ -1010,7 +1102,6 @@ def handle_message(message):
     if not message.text:
         return
 
-
     chat_id = message.chat.id
 
     if not check_membership_and_notify(message):
@@ -1074,6 +1165,9 @@ def handle_message(message):
 
     elif mode == "doc":
         bot.send_message(chat_id, "📄 لطفاً یک فایل PDF بفرست، نه متن.", reply_markup=doc_active_keyboard())
+
+    elif mode == "upscale":
+        bot.send_message(chat_id, "🔍 لطفاً یک عکس بفرست، نه متن.", reply_markup=upscale_active_keyboard())
 
     elif mode == "choosing_model":
         bot.send_message(
