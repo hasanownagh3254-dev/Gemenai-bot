@@ -14,6 +14,7 @@ import telebot
 import edge_tts
 import numpy as np
 import cv2
+import qrcode
 from PIL import Image, ImageFilter
 from telebot import types
 from flask import Flask
@@ -56,7 +57,14 @@ BTN_TTS = "🔊 متن به گفتار"
 BTN_SEARCH = "🔎 سرچ در اینترنت"
 BTN_DOC = "📄 خواندن سند"
 BTN_UPSCALE = "🔍 افزایش کیفیت عکس"
-# دکمه‌های حالت گفتگو / حالت ساخت عکس / حالت ویس به متن / حالت متن به گفتار / حالت سرچ / حالت سند / حالت افزایش کیفیت
+BTN_WEATHER = "🌤 وضعیت هوا"
+BTN_CURRENCY = "💱 تبدیل ارز"
+BTN_UNIT = "📏 تبدیل واحد"
+BTN_QR = "🔳 QR کد"
+BTN_REMOVEBG = "✂️ حذف پس‌زمینه"
+BTN_TRANSLATE = "🌐 ترجمه‌ی سریع"
+BTN_CRYPTO = "🪙 قیمت کریپتو"
+# دکمه‌های پایان هر حالت
 BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
 BTN_END_STT = "🔴 پایان ویس به متن"
@@ -64,6 +72,13 @@ BTN_END_TTS = "🔴 پایان متن به گفتار"
 BTN_END_SEARCH = "🔴 پایان سرچ"
 BTN_END_DOC = "🔴 پایان خواندن سند"
 BTN_END_UPSCALE = "🔴 پایان افزایش کیفیت"
+BTN_END_WEATHER = "🔴 پایان وضعیت هوا"
+BTN_END_CURRENCY = "🔴 پایان تبدیل ارز"
+BTN_END_UNIT = "🔴 پایان تبدیل واحد"
+BTN_END_QR = "🔴 پایان QR کد"
+BTN_END_REMOVEBG = "🔴 پایان حذف پس‌زمینه"
+BTN_END_TRANSLATE = "🔴 پایان ترجمه"
+BTN_END_CRYPTO = "🔴 پایان قیمت کریپتو"
 
 # روش‌های افزایش کیفیت عکس — کاربر با زدن دکمه‌ی «افزایش کیفیت عکس» یکی رو انتخاب می‌کنه
 UPSCALE_METHOD_OPTIONS = [
@@ -126,7 +141,10 @@ def main_menu_keyboard():
     - از ۵ دکمه به بالا: سه ستون (سه‌تا-سه‌تا) تا فضای کمتری بگیره
     اگه تعداد دکمه‌ها بخش‌پذیر نباشه، آخرین ردیف با تعداد کمتر پر می‌شه.
     """
-    buttons = [BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC, BTN_UPSCALE]  # هر قابلیت جدید رو همینجا اضافه کن
+    buttons = [
+        BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC, BTN_UPSCALE,
+        BTN_WEATHER, BTN_CURRENCY, BTN_UNIT, BTN_QR, BTN_REMOVEBG, BTN_TRANSLATE, BTN_CRYPTO,
+    ]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -183,6 +201,40 @@ def upscale_method_selection_keyboard():
     for button_text in UPSCALE_METHOD_BUTTON_TEXTS:
         keyboard.row(types.KeyboardButton(button_text))
     return keyboard
+
+
+def _simple_end_keyboard(end_button_text):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row(types.KeyboardButton(end_button_text))
+    return keyboard
+
+
+def weather_active_keyboard():
+    return _simple_end_keyboard(BTN_END_WEATHER)
+
+
+def currency_active_keyboard():
+    return _simple_end_keyboard(BTN_END_CURRENCY)
+
+
+def unit_active_keyboard():
+    return _simple_end_keyboard(BTN_END_UNIT)
+
+
+def qr_active_keyboard():
+    return _simple_end_keyboard(BTN_END_QR)
+
+
+def removebg_active_keyboard():
+    return _simple_end_keyboard(BTN_END_REMOVEBG)
+
+
+def translate_active_keyboard():
+    return _simple_end_keyboard(BTN_END_TRANSLATE)
+
+
+def crypto_active_keyboard():
+    return _simple_end_keyboard(BTN_END_CRYPTO)
 
 
 def model_selection_keyboard():
@@ -587,6 +639,207 @@ def upscale_image(image_bytes, method="combo", scale=2):
         return None, f"خطا در پردازش عکس: {str(e)}"
 
 
+# ۳م. وضعیت هوا با Open-Meteo (رایگان، بدون کلید)
+def get_weather(city_name):
+    try:
+        geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+        geo_resp = requests.get(geo_url, params={"name": city_name, "count": 1, "language": "fa"}, timeout=15)
+        geo_data = geo_resp.json()
+        results = geo_data.get("results")
+        if not results:
+            return f"❌ شهری با نام «{city_name}» پیدا نشد."
+
+        place = results[0]
+        lat, lon = place["latitude"], place["longitude"]
+        display_name = place.get("name", city_name)
+        country = place.get("country", "")
+
+        weather_url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": lat, "longitude": lon,
+            "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code",
+            "timezone": "auto"
+        }
+        weather_resp = requests.get(weather_url, params=params, timeout=15)
+        current = weather_resp.json().get("current", {})
+
+        weather_codes = {
+            0: "☀️ صاف", 1: "🌤 عمدتاً صاف", 2: "⛅️ نیمه‌ابری", 3: "☁️ ابری",
+            45: "🌫 مه", 48: "🌫 مه یخی", 51: "🌦 نم‌نم باران", 61: "🌧 باران",
+            63: "🌧 باران متوسط", 65: "🌧 باران شدید", 71: "🌨 برف", 73: "🌨 برف متوسط",
+            75: "❄️ برف شدید", 80: "🌦 رگبار", 95: "⛈ رعدوبرق"
+        }
+        code = current.get("weather_code")
+        condition = weather_codes.get(code, "نامشخص")
+
+        return (
+            f"📍 {display_name}, {country}\n\n"
+            f"{condition}\n"
+            f"🌡 دما: {current.get('temperature_2m')}°C\n"
+            f"💧 رطوبت: {current.get('relative_humidity_2m')}%\n"
+            f"💨 سرعت باد: {current.get('wind_speed_10m')} کیلومتر/ساعت"
+        )
+    except Exception as e:
+        print(f"Weather error: {e}")
+        return f"❌ خطا در دریافت وضعیت هوا: {str(e)}"
+
+
+# ۳ن. تبدیل ارز با Frankfurter (رایگان، بدون کلید)
+def convert_currency(text):
+    # فرمت‌های قابل قبول: "100 USD to EUR"، "100 دلار به یورو"
+    match = re.search(r"([\d.,]+)\s*([a-zA-Zآ-ی]+)\s*(?:to|به)\s*([a-zA-Zآ-ی]+)", text, re.IGNORECASE)
+    if not match:
+        return "❌ فرمت درست نیست. مثال: «100 USD to EUR» یا «100 دلار به یورو»"
+
+    amount_str, from_cur, to_cur = match.groups()
+    amount = float(amount_str.replace(",", ""))
+
+    currency_aliases = {
+        "دلار": "USD", "یورو": "EUR", "پوند": "GBP", "ین": "JPY",
+        "لیر": "TRY", "درهم": "AED", "یوان": "CNY", "روبل": "RUB",
+        "تومان": "IRR", "ریال": "IRR",
+    }
+    from_cur = currency_aliases.get(from_cur, from_cur.upper())
+    to_cur = currency_aliases.get(to_cur, to_cur.upper())
+
+    try:
+        url = "https://api.frankfurter.app/latest"
+        response = requests.get(url, params={"amount": amount, "from": from_cur, "to": to_cur}, timeout=15)
+        data = response.json()
+        if "rates" not in data or to_cur not in data.get("rates", {}):
+            return f"❌ تبدیل {from_cur} به {to_cur} پشتیبانی نمی‌شه (ارزهای غیررسمی مثل تومان ایران رو این سرویس نداره)."
+        result = data["rates"][to_cur]
+        return f"💱 {amount:,.2f} {from_cur} = {result:,.2f} {to_cur}"
+    except Exception as e:
+        print(f"Currency error: {e}")
+        return f"❌ خطا در تبدیل ارز: {str(e)}"
+
+
+# ۳س. تبدیل واحد (کاملاً محلی، بدون سرویس خارجی)
+UNIT_CONVERSIONS = {
+    ("km", "mile"): 0.621371, ("mile", "km"): 1.60934,
+    ("kg", "lb"): 2.20462, ("lb", "kg"): 0.453592,
+    ("c", "f"): None, ("f", "c"): None,  # نیاز به فرمول جدا
+    ("m", "ft"): 3.28084, ("ft", "m"): 0.3048,
+    ("cm", "inch"): 0.393701, ("inch", "cm"): 2.54,
+    ("l", "gallon"): 0.264172, ("gallon", "l"): 3.78541,
+}
+UNIT_ALIASES = {
+    "کیلومتر": "km", "مایل": "mile", "کیلوگرم": "kg", "کیلو": "kg", "پوند": "lb",
+    "سانتیگراد": "c", "فارنهایت": "f", "متر": "m", "فوت": "ft",
+    "سانتی‌متر": "cm", "سانتیمتر": "cm", "اینچ": "inch", "لیتر": "l", "گالن": "gallon",
+}
+
+
+def convert_unit(text):
+    match = re.search(r"([\d.,]+)\s*([a-zA-Zآ-ی]+)\s*(?:to|به)\s*([a-zA-Zآ-ی]+)", text, re.IGNORECASE)
+    if not match:
+        return "❌ فرمت درست نیست. مثال: «10 km to mile» یا «10 کیلومتر به مایل»"
+
+    value_str, from_unit, to_unit = match.groups()
+    value = float(value_str.replace(",", ""))
+    from_unit = UNIT_ALIASES.get(from_unit, from_unit.lower())
+    to_unit = UNIT_ALIASES.get(to_unit, to_unit.lower())
+
+    if from_unit == "c" and to_unit == "f":
+        result = value * 9 / 5 + 32
+        return f"📏 {value}°C = {result:.2f}°F"
+    if from_unit == "f" and to_unit == "c":
+        result = (value - 32) * 5 / 9
+        return f"📏 {value}°F = {result:.2f}°C"
+
+    factor = UNIT_CONVERSIONS.get((from_unit, to_unit))
+    if factor is None:
+        return f"❌ تبدیل {from_unit} به {to_unit} پشتیبانی نمی‌شه. واحدهای پشتیبانی‌شده: km, mile, kg, lb, c, f, m, ft, cm, inch, l, gallon"
+
+    result = value * factor
+    return f"📏 {value} {from_unit} = {result:.4f} {to_unit}"
+
+
+# ۳ع. ساخت و خواندن کد QR (کاملاً محلی)
+def generate_qr(text):
+    qr = qrcode.QRCode(version=1, box_size=10, border=4)
+    qr.add_data(text)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    output = io.BytesIO()
+    img.save(output, format="PNG")
+    return output.getvalue()
+
+
+def read_qr(image_bytes):
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    detector = cv2.QRCodeDetector()
+    data, points, _ = detector.detectAndDecode(img)
+    return data if data else None
+
+
+# ۳ف. حذف پس‌زمینه‌ی عکس با کتابخونه‌ی متن‌باز rembg (اجرا روی CPU، بدون کلید)
+def remove_background(image_bytes):
+    try:
+        from rembg import remove  # وارد کردن تنبل (lazy import) چون این کتابخونه سنگینه
+        result = remove(image_bytes)
+        return result, None
+    except Exception as e:
+        print(f"Remove background error: {e}")
+        return None, f"خطا در حذف پس‌زمینه: {str(e)}"
+
+
+# ۳ص. ترجمه‌ی سریع با همون مدل Groq فعلی (بدون سرویس/کلید اضافه)
+def translate_text(text):
+    payload = {
+        "model": "openai/gpt-oss-20b",
+        "messages": [
+            {"role": "system", "content": (
+                "You are a translation engine. Detect the input language. "
+                "If it's Persian, translate to natural English. Otherwise, translate to natural Persian. "
+                "Reply with ONLY the translation, nothing else — no notes, no quotes, no explanation."
+            )},
+            {"role": "user", "content": text}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 1024,
+        "reasoning_format": "hidden"
+    }
+    try:
+        return call_groq_api(payload, timeout=20)
+    except Exception as e:
+        return f"❌ خطای ارتباطی: {str(e)}"
+
+
+# ۳ق. قیمت لحظه‌ای ارز دیجیتال با CoinGecko (رایگان، بدون کلید)
+COIN_ALIASES = {
+    "بیت کوین": "bitcoin", "بیتکوین": "bitcoin", "btc": "bitcoin",
+    "اتریوم": "ethereum", "eth": "ethereum",
+    "تتر": "tether", "usdt": "tether",
+    "دوج کوین": "dogecoin", "dogecoin": "dogecoin", "doge": "dogecoin",
+    "ripple": "ripple", "xrp": "ripple",
+    "solana": "solana", "sol": "solana",
+    "بایننس": "binancecoin", "bnb": "binancecoin",
+}
+
+
+def get_crypto_price(coin_query):
+    coin_id = COIN_ALIASES.get(coin_query.strip().lower(), coin_query.strip().lower())
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"}
+        response = requests.get(url, params=params, timeout=15)
+        data = response.json()
+        if coin_id not in data:
+            return f"❌ ارزی با نام «{coin_query}» پیدا نشد. اسم انگلیسی دقیق (مثل bitcoin, ethereum) رو امتحان کن."
+        price = data[coin_id]["usd"]
+        change = data[coin_id].get("usd_24h_change", 0)
+        arrow = "📈" if change >= 0 else "📉"
+        return f"🪙 {coin_id.title()}\n💵 قیمت: ${price:,.4f}\n{arrow} تغییر ۲۴ ساعت: {change:.2f}%"
+    except Exception as e:
+        print(f"Crypto price error: {e}")
+        return f"❌ خطا در دریافت قیمت: {str(e)}"
+
+
 def clean_text(text):
     if not text:
         return text
@@ -709,7 +962,9 @@ def handle_start(message):
         "🔊 متن به گفتار: متن بفرست، به فایل صوتی تبدیلش می‌کنم.\n"
         "🔎 سرچ در اینترنت: توی وب سرچ می‌کنم و خلاصه‌ی به‌روز با منابع می‌دم.\n"
         "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n"
-        "🔍 افزایش کیفیت عکس: عکس بفرست، کیفیت و رزولوشنش رو بالا می‌برم.\n\n"
+        "🔍 افزایش کیفیت عکس: عکس بفرست، کیفیت و رزولوشنش رو بالا می‌برم.\n"
+        "🌤 وضعیت هوا | 💱 تبدیل ارز | 📏 تبدیل واحد\n"
+        "🔳 QR کد | ✂️ حذف پس‌زمینه | 🌐 ترجمه‌ی سریع | 🪙 قیمت کریپتو\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
@@ -960,6 +1215,130 @@ def handle_end_upscale_button(message):
     )
 
 
+# ۸ل. دکمه «وضعیت هوا»
+@bot.message_handler(func=lambda message: message.text == BTN_WEATHER)
+def handle_weather_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "weather")
+    bot.send_message(chat_id, "🌤 اسم شهر رو بفرست (مثلاً «تهران» یا «Istanbul»).\nبرای خروج، دکمه‌ی «پایان وضعیت هوا» رو بزن.", reply_markup=weather_active_keyboard())
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_WEATHER)
+def handle_end_weather_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت وضعیت هوا پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
+# ۸م. دکمه «تبدیل ارز»
+@bot.message_handler(func=lambda message: message.text == BTN_CURRENCY)
+def handle_currency_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "currency")
+    bot.send_message(chat_id, "💱 مبلغ رو به این فرمت بفرست: «100 USD to EUR» یا «100 دلار به یورو».\nبرای خروج، دکمه‌ی «پایان تبدیل ارز» رو بزن.", reply_markup=currency_active_keyboard())
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_CURRENCY)
+def handle_end_currency_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت تبدیل ارز پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
+# ۸ن. دکمه «تبدیل واحد»
+@bot.message_handler(func=lambda message: message.text == BTN_UNIT)
+def handle_unit_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "unit")
+    bot.send_message(chat_id, "📏 مقدار رو به این فرمت بفرست: «10 km to mile» یا «10 کیلومتر به مایل».\nبرای خروج، دکمه‌ی «پایان تبدیل واحد» رو بزن.", reply_markup=unit_active_keyboard())
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_UNIT)
+def handle_end_unit_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت تبدیل واحد پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
+# ۸س. دکمه «QR کد»
+@bot.message_handler(func=lambda message: message.text == BTN_QR)
+def handle_qr_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "qr")
+    bot.send_message(
+        chat_id,
+        "🔳 برای ساخت QR، یه متن یا لینک بفرست. برای خوندن QR، یه عکس از کد QR بفرست.\n"
+        "برای خروج، دکمه‌ی «پایان QR کد» رو بزن.",
+        reply_markup=qr_active_keyboard()
+    )
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_QR)
+def handle_end_qr_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت QR کد پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
+# ۸ع. دکمه «حذف پس‌زمینه»
+@bot.message_handler(func=lambda message: message.text == BTN_REMOVEBG)
+def handle_removebg_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "removebg")
+    bot.send_message(chat_id, "✂️ یه عکس بفرست تا پس‌زمینه‌ش رو حذف کنم.\nبرای خروج، دکمه‌ی «پایان حذف پس‌زمینه» رو بزن.", reply_markup=removebg_active_keyboard())
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_REMOVEBG)
+def handle_end_removebg_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت حذف پس‌زمینه پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
+# ۸ف. دکمه «ترجمه‌ی سریع»
+@bot.message_handler(func=lambda message: message.text == BTN_TRANSLATE)
+def handle_translate_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "translate")
+    bot.send_message(chat_id, "🌐 یه متن بفرست (فارسی یا انگلیسی)، خودکار ترجمه‌ش می‌کنم.\nبرای خروج، دکمه‌ی «پایان ترجمه» رو بزن.", reply_markup=translate_active_keyboard())
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_TRANSLATE)
+def handle_end_translate_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت ترجمه پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
+# ۸ص. دکمه «قیمت کریپتو»
+@bot.message_handler(func=lambda message: message.text == BTN_CRYPTO)
+def handle_crypto_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "crypto")
+    bot.send_message(chat_id, "🪙 اسم ارز دیجیتال رو بفرست (مثلاً «بیت کوین» یا «bitcoin»).\nبرای خروج، دکمه‌ی «پایان قیمت کریپتو» رو بزن.", reply_markup=crypto_active_keyboard())
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_CRYPTO)
+def handle_end_crypto_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت قیمت کریپتو پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
 # ۸د. دکمه شیشه‌ای «✅ عضو شدم» زیر پیام عضویت اجباری
 @bot.callback_query_handler(func=lambda call: call.data == CALLBACK_CHECK_JOIN)
 def handle_check_join(call):
@@ -1048,11 +1427,52 @@ def handle_photo(message):
                 pass
         return
 
+    if mode == "qr":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+
+            qr_text = read_qr(downloaded_file)
+            if qr_text:
+                bot.send_message(chat_id, f"🔳 محتوای QR:\n{qr_text}", reply_markup=qr_active_keyboard())
+            else:
+                bot.send_message(chat_id, "❌ هیچ کد QR توی این عکس پیدا نشد.", reply_markup=qr_active_keyboard())
+        except Exception as e:
+            print(f"Error reading QR: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ خطا در خواندن QR: {str(e)}", reply_markup=qr_active_keyboard())
+            except Exception:
+                pass
+        return
+
+    if mode == "removebg":
+        try:
+            bot.send_chat_action(chat_id, "upload_photo")
+
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+
+            image_bytes, error_detail = remove_background(downloaded_file)
+            if image_bytes:
+                bot.send_document(chat_id, document=image_bytes, visible_file_name="no-background.png", caption="✂️ پس‌زمینه حذف شد", reply_markup=removebg_active_keyboard())
+            else:
+                bot.send_message(chat_id, f"❌ حذف پس‌زمینه با خطا مواجه شد.\nجزئیات: {error_detail}", reply_markup=removebg_active_keyboard())
+        except Exception as e:
+            print(f"Error removing background: {e}")
+            try:
+                bot.send_message(chat_id, f"❌ خطا در حذف پس‌زمینه: {str(e)}", reply_markup=removebg_active_keyboard())
+            except Exception:
+                pass
+        return
+
     if mode != "chat":
         bot.send_message(
             chat_id,
-            "برای ارسال عکس، اول باید وارد حالت «شروع گفتگو» (برای توصیف عکس)، «ساخت عکس» (برای ساخت عکس جدید)، "
-            "یا «افزایش کیفیت عکس» بشی 👇",
+            "برای ارسال عکس، اول باید یکی از حالت‌های مربوط به عکس رو از منو انتخاب کنی 👇",
             reply_markup=main_menu_keyboard()
         )
         return
@@ -1228,6 +1648,55 @@ def handle_message(message):
 
     elif mode == "upscale":
         bot.send_message(chat_id, "🔍 لطفاً یک عکس بفرست، نه متن.", reply_markup=upscale_active_keyboard())
+
+    elif mode == "weather":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            reply = get_weather(message.text.strip())
+            bot.send_message(chat_id, reply, reply_markup=weather_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=weather_active_keyboard())
+
+    elif mode == "currency":
+        try:
+            reply = convert_currency(message.text.strip())
+            bot.send_message(chat_id, reply, reply_markup=currency_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=currency_active_keyboard())
+
+    elif mode == "unit":
+        try:
+            reply = convert_unit(message.text.strip())
+            bot.send_message(chat_id, reply, reply_markup=unit_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=unit_active_keyboard())
+
+    elif mode == "qr":
+        try:
+            bot.send_chat_action(chat_id, "upload_photo")
+            qr_bytes = generate_qr(message.text.strip())
+            bot.send_photo(chat_id, photo=qr_bytes, caption="🔳 کد QR ساخته شد", reply_markup=qr_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا در ساخت QR: {str(e)}", reply_markup=qr_active_keyboard())
+
+    elif mode == "removebg":
+        bot.send_message(chat_id, "✂️ لطفاً یک عکس بفرست، نه متن.", reply_markup=removebg_active_keyboard())
+
+    elif mode == "translate":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            reply = translate_text(message.text)
+            bot.send_message(chat_id, reply, reply_markup=translate_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=translate_active_keyboard())
+
+    elif mode == "crypto":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            reply = get_crypto_price(message.text.strip())
+            bot.send_message(chat_id, reply, reply_markup=crypto_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=crypto_active_keyboard())
 
     elif mode == "choosing_model":
         bot.send_message(
