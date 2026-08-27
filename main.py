@@ -26,6 +26,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رای
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()  # برای سرچ در اینترنت
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خواندن سند (اختیاری؛ بدون کلید هم با محدودیت کمتر کار می‌کنه)
 POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()  # لازم برای مدل kontext (ساخت عکس بر اساس عکس مرجع)
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()  # اختیاری؛ برای پایدارتر شدن قیمت کریپتو (رایگان از coingecko.com)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -61,7 +62,6 @@ BTN_WEATHER = "🌤 وضعیت هوا"
 BTN_CURRENCY = "💱 تبدیل ارز"
 BTN_UNIT = "📏 تبدیل واحد"
 BTN_QR = "🔳 QR کد"
-BTN_REMOVEBG = "✂️ حذف پس‌زمینه"
 BTN_TRANSLATE = "🌐 ترجمه‌ی سریع"
 BTN_CRYPTO = "🪙 قیمت کریپتو"
 # دکمه‌های پایان هر حالت
@@ -76,7 +76,6 @@ BTN_END_WEATHER = "🔴 پایان وضعیت هوا"
 BTN_END_CURRENCY = "🔴 پایان تبدیل ارز"
 BTN_END_UNIT = "🔴 پایان تبدیل واحد"
 BTN_END_QR = "🔴 پایان QR کد"
-BTN_END_REMOVEBG = "🔴 پایان حذف پس‌زمینه"
 BTN_END_TRANSLATE = "🔴 پایان ترجمه"
 BTN_END_CRYPTO = "🔴 پایان قیمت کریپتو"
 
@@ -143,7 +142,7 @@ def main_menu_keyboard():
     """
     buttons = [
         BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC, BTN_UPSCALE,
-        BTN_WEATHER, BTN_CURRENCY, BTN_UNIT, BTN_QR, BTN_REMOVEBG, BTN_TRANSLATE, BTN_CRYPTO,
+        BTN_WEATHER, BTN_CURRENCY, BTN_UNIT, BTN_QR, BTN_TRANSLATE, BTN_CRYPTO,
     ]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
@@ -223,10 +222,6 @@ def unit_active_keyboard():
 
 def qr_active_keyboard():
     return _simple_end_keyboard(BTN_END_QR)
-
-
-def removebg_active_keyboard():
-    return _simple_end_keyboard(BTN_END_REMOVEBG)
 
 
 def translate_active_keyboard():
@@ -777,26 +772,6 @@ def read_qr(image_bytes):
     return data if data else None
 
 
-# ۳ف. حذف پس‌زمینه‌ی عکس با کتابخونه‌ی متن‌باز rembg (اجرا روی CPU، بدون کلید)
-def remove_background(image_bytes, timeout=90):
-    try:
-        from rembg import remove  # وارد کردن تنبل (lazy import) چون این کتابخونه سنگینه
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(remove, image_bytes)
-            try:
-                result = future.result(timeout=timeout)
-            except concurrent.futures.TimeoutError:
-                return None, (
-                    f"عملیات بیش از {timeout} ثانیه طول کشید (احتمالاً دانلود اولیه‌ی مدل کند بوده یا سرور شلوغ بوده). "
-                    "چند دقیقه دیگه دوباره امتحان کن — دفعات بعد باید سریع‌تر باشه."
-                )
-        return result, None
-    except Exception as e:
-        print(f"Remove background error: {e}")
-        return None, f"خطا در حذف پس‌زمینه: {str(e)}"
-
-
 # ۳ص. ترجمه‌ی سریع با همون مدل Groq فعلی (بدون سرویس/کلید اضافه)
 def translate_text(text):
     payload = {
@@ -848,7 +823,17 @@ def get_crypto_price(coin_query):
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"}
-        response = requests.get(url, params=params, timeout=15)
+        headers = {}
+        if COINGECKO_API_KEY:
+            headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+
+        if response.status_code == 429:
+            return "❌ سرویس قیمت لحظه‌ای موقتاً شلوغه (محدودیت نرخ رایگان CoinGecko). چند لحظه صبر کن و دوباره امتحان کن."
+        if response.status_code != 200:
+            print(f"CoinGecko error — status={response.status_code}, body={response.text[:300]}")
+            return f"❌ خطای سرویس قیمت (کد {response.status_code}). چند لحظه دیگه امتحان کن."
+
         data = response.json()
         if coin_id not in data:
             return f"❌ ارزی با نام «{coin_query}» پیدا نشد. اسم انگلیسی دقیق (مثل bitcoin, ethereum) رو امتحان کن."
@@ -985,7 +970,7 @@ def handle_start(message):
         "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n"
         "🔍 افزایش کیفیت عکس: عکس بفرست، کیفیت و رزولوشنش رو بالا می‌برم.\n"
         "🌤 وضعیت هوا | 💱 تبدیل ارز | 📏 تبدیل واحد\n"
-        "🔳 QR کد | ✂️ حذف پس‌زمینه | 🌐 ترجمه‌ی سریع | 🪙 قیمت کریپتو\n\n"
+        "🔳 QR کد | 🌐 ترجمه‌ی سریع | 🪙 قیمت کریپتو\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
@@ -1309,23 +1294,6 @@ def handle_end_qr_button(message):
     bot.send_message(chat_id, "🔴 حالت QR کد پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
 
 
-# ۸ع. دکمه «حذف پس‌زمینه»
-@bot.message_handler(func=lambda message: message.text == BTN_REMOVEBG)
-def handle_removebg_button(message):
-    if not check_membership_and_notify(message):
-        return
-    chat_id = message.chat.id
-    set_mode(chat_id, "removebg")
-    bot.send_message(chat_id, "✂️ یه عکس بفرست تا پس‌زمینه‌ش رو حذف کنم.\nبرای خروج، دکمه‌ی «پایان حذف پس‌زمینه» رو بزن.", reply_markup=removebg_active_keyboard())
-
-
-@bot.message_handler(func=lambda message: message.text == BTN_END_REMOVEBG)
-def handle_end_removebg_button(message):
-    chat_id = message.chat.id
-    set_mode(chat_id, None)
-    bot.send_message(chat_id, "🔴 حالت حذف پس‌زمینه پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
-
-
 # ۸ف. دکمه «ترجمه‌ی سریع»
 @bot.message_handler(func=lambda message: message.text == BTN_TRANSLATE)
 def handle_translate_button(message):
@@ -1465,27 +1433,6 @@ def handle_photo(message):
             print(f"Error reading QR: {e}")
             try:
                 bot.send_message(chat_id, f"❌ خطا در خواندن QR: {str(e)}", reply_markup=qr_active_keyboard())
-            except Exception:
-                pass
-        return
-
-    if mode == "removebg":
-        try:
-            bot.send_chat_action(chat_id, "upload_photo")
-
-            file_id = message.photo[-1].file_id
-            file_info = bot.get_file(file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-
-            image_bytes, error_detail = remove_background(downloaded_file)
-            if image_bytes:
-                bot.send_document(chat_id, document=image_bytes, visible_file_name="no-background.png", caption="✂️ پس‌زمینه حذف شد", reply_markup=removebg_active_keyboard())
-            else:
-                bot.send_message(chat_id, f"❌ حذف پس‌زمینه با خطا مواجه شد.\nجزئیات: {error_detail}", reply_markup=removebg_active_keyboard())
-        except Exception as e:
-            print(f"Error removing background: {e}")
-            try:
-                bot.send_message(chat_id, f"❌ خطا در حذف پس‌زمینه: {str(e)}", reply_markup=removebg_active_keyboard())
             except Exception:
                 pass
         return
@@ -1699,9 +1646,6 @@ def handle_message(message):
             bot.send_photo(chat_id, photo=qr_bytes, caption="🔳 کد QR ساخته شد", reply_markup=qr_active_keyboard())
         except Exception as e:
             bot.send_message(chat_id, f"❌ خطا در ساخت QR: {str(e)}", reply_markup=qr_active_keyboard())
-
-    elif mode == "removebg":
-        bot.send_message(chat_id, "✂️ لطفاً یک عکس بفرست، نه متن.", reply_markup=removebg_active_keyboard())
 
     elif mode == "translate":
         try:
