@@ -778,10 +778,19 @@ def read_qr(image_bytes):
 
 
 # ۳ف. حذف پس‌زمینه‌ی عکس با کتابخونه‌ی متن‌باز rembg (اجرا روی CPU، بدون کلید)
-def remove_background(image_bytes):
+def remove_background(image_bytes, timeout=90):
     try:
         from rembg import remove  # وارد کردن تنبل (lazy import) چون این کتابخونه سنگینه
-        result = remove(image_bytes)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(remove, image_bytes)
+            try:
+                result = future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                return None, (
+                    f"عملیات بیش از {timeout} ثانیه طول کشید (احتمالاً دانلود اولیه‌ی مدل کند بوده یا سرور شلوغ بوده). "
+                    "چند دقیقه دیگه دوباره امتحان کن — دفعات بعد باید سریع‌تر باشه."
+                )
         return result, None
     except Exception as e:
         print(f"Remove background error: {e}")
@@ -822,8 +831,20 @@ COIN_ALIASES = {
 }
 
 
+def _normalize_coin_query(text):
+    # حذف فاصله‌ی معمولی، نیم‌فاصله (ZWNJ)، و کوچک‌کردن حروف، تا «بیت کوین»،
+    # «بیت‌کوین» (با نیم‌فاصله)، و «بیتکوین» همه یکسان در نظر گرفته بشن
+    text = text.strip().lower()
+    text = text.replace("\u200c", "").replace(" ", "")
+    return text
+
+
+COIN_ALIASES_NORMALIZED = {_normalize_coin_query(k): v for k, v in COIN_ALIASES.items()}
+
+
 def get_crypto_price(coin_query):
-    coin_id = COIN_ALIASES.get(coin_query.strip().lower(), coin_query.strip().lower())
+    normalized = _normalize_coin_query(coin_query)
+    coin_id = COIN_ALIASES_NORMALIZED.get(normalized, normalized)
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"}
