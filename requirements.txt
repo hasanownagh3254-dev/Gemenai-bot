@@ -4,3 +4,5 @@ flask
 edge-tts
 Pillow
 opencv-python-headless
+qrcode
+rembg
