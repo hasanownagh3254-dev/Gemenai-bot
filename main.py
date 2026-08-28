@@ -64,6 +64,7 @@ BTN_UNIT = "📏 تبدیل واحد"
 BTN_QR = "🔳 QR کد"
 BTN_TRANSLATE = "🌐 ترجمه‌ی سریع"
 BTN_CRYPTO = "🪙 قیمت کریپتو"
+BTN_GOLD = "💰 دلار و طلا (ایران)"
 # دکمه‌های پایان هر حالت
 BTN_END_CHAT = "🔴 پایان گفتگو"
 BTN_END_IMAGE = "🔴 پایان ساخت عکس"
@@ -78,6 +79,7 @@ BTN_END_UNIT = "🔴 پایان تبدیل واحد"
 BTN_END_QR = "🔴 پایان QR کد"
 BTN_END_TRANSLATE = "🔴 پایان ترجمه"
 BTN_END_CRYPTO = "🔴 پایان قیمت کریپتو"
+BTN_END_GOLD = "🔴 پایان دلار و طلا"
 
 # روش‌های افزایش کیفیت عکس — کاربر با زدن دکمه‌ی «افزایش کیفیت عکس» یکی رو انتخاب می‌کنه
 UPSCALE_METHOD_OPTIONS = [
@@ -142,7 +144,7 @@ def main_menu_keyboard():
     """
     buttons = [
         BTN_START_CHAT, BTN_IMAGE, BTN_STT, BTN_TTS, BTN_SEARCH, BTN_DOC, BTN_UPSCALE,
-        BTN_WEATHER, BTN_CURRENCY, BTN_UNIT, BTN_QR, BTN_TRANSLATE, BTN_CRYPTO,
+        BTN_WEATHER, BTN_CURRENCY, BTN_UNIT, BTN_QR, BTN_TRANSLATE, BTN_CRYPTO, BTN_GOLD,
     ]  # هر قابلیت جدید رو همینجا اضافه کن
     columns = 3 if len(buttons) >= 5 else 2
 
@@ -230,6 +232,10 @@ def translate_active_keyboard():
 
 def crypto_active_keyboard():
     return _simple_end_keyboard(BTN_END_CRYPTO)
+
+
+def gold_active_keyboard():
+    return _simple_end_keyboard(BTN_END_GOLD)
 
 
 def model_selection_keyboard():
@@ -846,6 +852,53 @@ def get_crypto_price(coin_query):
         return f"❌ خطا در دریافت قیمت: {str(e)}"
 
 
+# ۳ل. قیمت دلار و طلا در بازار آزاد ایران با API.TALA.IR (رایگان، بدون کلید)
+GOLD_KEY_ALIASES = {
+    "دلار": "usd", "یورو": "eur", "طلا": "gold18", "طلای 18": "gold18",
+    "طلای هجده": "gold18", "طلای ۱۸": "gold18", "طلا ۱۸": "gold18",
+    "usd": "usd", "eur": "eur", "gold18": "gold18",
+}
+DEFAULT_GOLD_KEYS = ["usd", "eur", "gold18"]
+
+
+def get_iran_gold_currency(keys):
+    url = f"https://api.tala.ir/v1/rates/{','.join(keys)}"
+    try:
+        response = requests.get(url, timeout=15)
+    except Exception as e:
+        return None, f"خطای ارتباطی: {str(e)}"
+
+    if response.status_code != 200:
+        print(f"api.tala.ir error — status={response.status_code}, body={response.text[:300]}")
+        return None, f"کد {response.status_code} — {response.text[:300]}"
+
+    try:
+        data = response.json()
+    except Exception as e:
+        return None, f"خطا در پردازش پاسخ: {str(e)} — {response.text[:300]}"
+
+    if not data.get("success"):
+        return None, f"پاسخ ناموفق از سرویس: {str(data)[:300]}"
+
+    return data.get("rates", []), None
+
+
+def format_gold_currency_rates(rates):
+    if not rates:
+        return "❌ داده‌ای دریافت نشد."
+    lines = []
+    for r in rates:
+        title = r.get("title", r.get("key", "؟"))
+        value = r.get("value")
+        unit = r.get("unit", "")
+        status = r.get("status")
+        if status != "ok" or value is None:
+            lines.append(f"⚠️ {title}: در دسترس نیست")
+        else:
+            lines.append(f"💰 {title}: {value:,.0f} {unit}")
+    return "\n".join(lines)
+
+
 def clean_text(text):
     if not text:
         return text
@@ -970,7 +1023,7 @@ def handle_start(message):
         "📄 خواندن سند: یک PDF بفرست، می‌خونمش و خلاصه یا جواب سوالت رو می‌دم.\n"
         "🔍 افزایش کیفیت عکس: عکس بفرست، کیفیت و رزولوشنش رو بالا می‌برم.\n"
         "🌤 وضعیت هوا | 💱 تبدیل ارز | 📏 تبدیل واحد\n"
-        "🔳 QR کد | 🌐 ترجمه‌ی سریع | 🪙 قیمت کریپتو\n\n"
+        "🔳 QR کد | 🌐 ترجمه‌ی سریع | 🪙 قیمت کریپتو | 💰 دلار و طلا\n\n"
         "یکی از گزینه‌های زیر رو انتخاب کن 👇",
         reply_markup=main_menu_keyboard()
     )
@@ -1328,6 +1381,35 @@ def handle_end_crypto_button(message):
     bot.send_message(chat_id, "🔴 حالت قیمت کریپتو پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
 
 
+# ۸ص۲. دکمه «دلار و طلا (ایران)» — بلافاصله قیمت‌های پیش‌فرض رو نشون می‌ده
+@bot.message_handler(func=lambda message: message.text == BTN_GOLD)
+def handle_gold_button(message):
+    if not check_membership_and_notify(message):
+        return
+    chat_id = message.chat.id
+    set_mode(chat_id, "gold")
+    bot.send_chat_action(chat_id, "typing")
+
+    rates, error = get_iran_gold_currency(DEFAULT_GOLD_KEYS)
+    if rates:
+        reply = format_gold_currency_rates(rates)
+    else:
+        reply = f"❌ خطا در دریافت قیمت.\nجزئیات: {error}"
+
+    bot.send_message(
+        chat_id,
+        reply + "\n\nمی‌تونی «دلار»، «یورو»، یا «طلا» رو هم جدا بپرسی.\nبرای خروج، دکمه‌ی «پایان دلار و طلا» رو بزن.",
+        reply_markup=gold_active_keyboard()
+    )
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_END_GOLD)
+def handle_end_gold_button(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(chat_id, "🔴 حالت دلار و طلا پایان یافت. از منوی زیر یکی رو انتخاب کن.", reply_markup=main_menu_keyboard())
+
+
 # ۸د. دکمه شیشه‌ای «✅ عضو شدم» زیر پیام عضویت اجباری
 @bot.callback_query_handler(func=lambda call: call.data == CALLBACK_CHECK_JOIN)
 def handle_check_join(call):
@@ -1662,6 +1744,17 @@ def handle_message(message):
             bot.send_message(chat_id, reply, reply_markup=crypto_active_keyboard())
         except Exception as e:
             bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=crypto_active_keyboard())
+
+    elif mode == "gold":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            normalized_query = message.text.strip().lower()
+            key = GOLD_KEY_ALIASES.get(normalized_query, normalized_query)
+            rates, error = get_iran_gold_currency([key])
+            reply = format_gold_currency_rates(rates) if rates else f"❌ خطا در دریافت قیمت.\nجزئیات: {error}"
+            bot.send_message(chat_id, reply, reply_markup=gold_active_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=gold_active_keyboard())
 
     elif mode == "choosing_model":
         bot.send_message(
