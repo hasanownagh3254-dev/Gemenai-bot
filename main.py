@@ -833,8 +833,9 @@ def fetch_market_data():
     try:
         response = requests.get(BRSAPI_URL, params={"key": BRSAPI_KEY}, timeout=20)
         if response.status_code != 200:
-            print(f"BrsApi fetch failed — status={response.status_code}, body={response.text[:300]}")
-            return False, f"کد {response.status_code}"
+            body_preview = response.text[:300]
+            print(f"BrsApi fetch failed — status={response.status_code}, body={body_preview}")
+            return False, f"کد {response.status_code} — {body_preview}"
         data = response.json()
         with MARKET_CACHE_LOCK:
             MARKET_CACHE["data"] = data
@@ -851,22 +852,23 @@ def market_cache_updater_loop():
         time.sleep(MARKET_CACHE_REFRESH_SECONDS)
 
 
-def find_market_item(query):
-    normalized = _normalize_coin_query(query)
-    symbol_query = MARKET_QUERY_ALIASES_NORMALIZED.get(normalized, query.strip().upper())
-
+def _get_market_data():
+    """کش رو برمی‌گردونه؛ اگه خالی بود، یک‌بار به‌صورت آنی تلاش می‌کنه و خطای واقعی رو هم برمی‌گردونه."""
     with MARKET_CACHE_LOCK:
         data = MARKET_CACHE.get("data")
+    if data:
+        return data, None
 
-    # اگه کش هنوز پر نشده (مثلاً بلافاصله بعد از روشن شدن سرویس)، یک‌بار به‌صورت آنی امتحان کن
-    if not data:
-        ok, _ = fetch_market_data()
-        if ok:
-            with MARKET_CACHE_LOCK:
-                data = MARKET_CACHE.get("data")
+    ok, err = fetch_market_data()
+    if ok:
+        with MARKET_CACHE_LOCK:
+            return MARKET_CACHE.get("data"), None
+    return None, err
 
-    if not data:
-        return None
+
+def find_market_item(query, data):
+    normalized = _normalize_coin_query(query)
+    symbol_query = MARKET_QUERY_ALIASES_NORMALIZED.get(normalized, query.strip().upper())
 
     for category in ("gold", "currency", "cryptocurrency"):
         for item in data.get(category, []):
@@ -897,24 +899,36 @@ def format_market_item(item):
 
 
 def get_market_price_text(query):
-    item = find_market_item(query)
+    if not BRSAPI_KEY:
+        return "❌ سرویس قیمت هنوز تنظیم نشده (نیاز به BRSAPI_KEY در Render)."
+
+    data, err = _get_market_data()
+    if data is None:
+        print(f"Market data fetch failed: {err}")
+        return f"❌ خطا در دریافت داده از سرویس قیمت.\nجزئیات: {err}"
+
+    item = find_market_item(query, data)
     if item is None:
-        if not BRSAPI_KEY:
-            return "❌ سرویس قیمت هنوز تنظیم نشده (نیاز به BRSAPI_KEY در Render)."
         return f"❌ چیزی با نام «{query}» پیدا نشد. اسم دقیق‌تر (مثل دلار، یورو، بیت‌کوین) رو امتحان کن."
     return format_market_item(item)
 
 
 def get_default_market_bundle_text():
+    if not BRSAPI_KEY:
+        return "❌ سرویس قیمت هنوز تنظیم نشده (نیاز به BRSAPI_KEY در Render)."
+
+    data, err = _get_market_data()
+    if data is None:
+        print(f"Market data fetch failed: {err}")
+        return f"❌ خطا در دریافت داده از سرویس قیمت.\nجزئیات: {err}"
+
     lines = []
     for symbol in DEFAULT_MARKET_SYMBOLS:
-        item = find_market_item(symbol)
+        item = find_market_item(symbol, data)
         if item:
             lines.append(format_market_item(item))
     if not lines:
-        if not BRSAPI_KEY:
-            return "❌ سرویس قیمت هنوز تنظیم نشده (نیاز به BRSAPI_KEY در Render)."
-        return "❌ داده‌ای دریافت نشد. چند لحظه دیگه دوباره امتحان کن."
+        return "❌ داده‌ای برای نمادهای پیش‌فرض پیدا نشد."
     return "\n\n".join(lines)
 
 
