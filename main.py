@@ -831,7 +831,13 @@ def fetch_market_data():
     if not BRSAPI_KEY:
         return False, "متغیر BRSAPI_KEY در Render تنظیم نشده است."
     try:
-        response = requests.get(BRSAPI_URL, params={"key": BRSAPI_KEY}, timeout=20)
+        # فایروال BrsApi درخواست‌هایی با User-Agent پیش‌فرض کتابخونه‌های برنامه‌نویسی (مثل python-requests) رو
+        # مسدود می‌کنه؛ برای همین یه User-Agent شبیه مرورگر واقعی می‌فرستیم.
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        }
+        response = requests.get(BRSAPI_URL, params={"key": BRSAPI_KEY}, headers=headers, timeout=20)
         if response.status_code != 200:
             body_preview = response.text[:300]
             print(f"BrsApi fetch failed — status={response.status_code}, body={body_preview}")
