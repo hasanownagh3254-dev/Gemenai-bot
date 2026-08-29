@@ -26,7 +26,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # کلید رای
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()  # برای سرچ در اینترنت
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خواندن سند (اختیاری؛ بدون کلید هم با محدودیت کمتر کار می‌کنه)
 POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()  # لازم برای مدل kontext (ساخت عکس بر اساس عکس مرجع)
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()  # اختیاری؛ برای پایدارتر شدن قیمت کریپتو (رایگان از coingecko.com)
+BRSAPI_KEY = os.environ.get("BRSAPI_KEY", "").strip()  # برای قیمت طلا/ارز/کریپتو ایران (رایگان از BrsApi.ir)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -800,103 +800,122 @@ def translate_text(text):
         return f"❌ خطای ارتباطی: {str(e)}"
 
 
-# ۳ق. قیمت لحظه‌ای ارز دیجیتال با CoinGecko (رایگان، بدون کلید)
-COIN_ALIASES = {
-    "بیت کوین": "bitcoin", "بیتکوین": "bitcoin", "btc": "bitcoin",
-    "اتریوم": "ethereum", "eth": "ethereum",
-    "تتر": "tether", "usdt": "tether",
-    "دوج کوین": "dogecoin", "dogecoin": "dogecoin", "doge": "dogecoin",
-    "ripple": "ripple", "xrp": "ripple",
-    "solana": "solana", "sol": "solana",
-    "بایننس": "binancecoin", "bnb": "binancecoin",
-}
-
-
+# ۳ق. قیمت طلا/ارز/کریپتوی ایران با BrsApi.ir — با کش مشترک (هر ۳ دقیقه یک‌بار برای همه‌ی کاربرا)
 def _normalize_coin_query(text):
-    # حذف فاصله‌ی معمولی، نیم‌فاصله (ZWNJ)، و کوچک‌کردن حروف، تا «بیت کوین»،
+    # حذف فاصله‌ی معمولی، نیم‌فاصله (ZWNJ)، و کوچک‌کردن حروف، تا مثلاً «بیت کوین»،
     # «بیت‌کوین» (با نیم‌فاصله)، و «بیتکوین» همه یکسان در نظر گرفته بشن
     text = text.strip().lower()
     text = text.replace("\u200c", "").replace(" ", "")
     return text
 
 
-COIN_ALIASES_NORMALIZED = {_normalize_coin_query(k): v for k, v in COIN_ALIASES.items()}
+BRSAPI_URL = "https://Api.BrsApi.ir/Market/Gold_Currency.php"
+MARKET_CACHE_REFRESH_SECONDS = 180  # هر ۳ دقیقه
+MARKET_CACHE = {"data": None, "last_updated": 0}
+MARKET_CACHE_LOCK = threading.Lock()
 
-
-def get_crypto_price(coin_query):
-    normalized = _normalize_coin_query(coin_query)
-    coin_id = COIN_ALIASES_NORMALIZED.get(normalized, normalized)
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
-        params = {"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"}
-        headers = {}
-        if COINGECKO_API_KEY:
-            headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-
-        if response.status_code == 429:
-            return "❌ سرویس قیمت لحظه‌ای موقتاً شلوغه (محدودیت نرخ رایگان CoinGecko). چند لحظه صبر کن و دوباره امتحان کن."
-        if response.status_code != 200:
-            print(f"CoinGecko error — status={response.status_code}, body={response.text[:300]}")
-            return f"❌ خطای سرویس قیمت (کد {response.status_code}). چند لحظه دیگه امتحان کن."
-
-        data = response.json()
-        if coin_id not in data:
-            return f"❌ ارزی با نام «{coin_query}» پیدا نشد. اسم انگلیسی دقیق (مثل bitcoin, ethereum) رو امتحان کن."
-        price = data[coin_id]["usd"]
-        change = data[coin_id].get("usd_24h_change", 0)
-        arrow = "📈" if change >= 0 else "📉"
-        return f"🪙 {coin_id.title()}\n💵 قیمت: ${price:,.4f}\n{arrow} تغییر ۲۴ ساعت: {change:.2f}%"
-    except Exception as e:
-        print(f"Crypto price error: {e}")
-        return f"❌ خطا در دریافت قیمت: {str(e)}"
-
-
-# ۳ل. قیمت دلار و طلا در بازار آزاد ایران با API.TALA.IR (رایگان، بدون کلید)
-GOLD_KEY_ALIASES = {
-    "دلار": "usd", "یورو": "eur", "طلا": "gold18", "طلای 18": "gold18",
-    "طلای هجده": "gold18", "طلای ۱۸": "gold18", "طلا ۱۸": "gold18",
-    "usd": "usd", "eur": "eur", "gold18": "gold18",
+# چندتا اسم فارسی رایج برای جستجوی راحت‌تر (علاوه بر symbol/name/name_en خودِ API)
+MARKET_QUERY_ALIASES = {
+    "دلار": "USD", "یورو": "EUR", "طلا": "IR_GOLD_18K", "طلای 18": "IR_GOLD_18K",
+    "طلای هجده": "IR_GOLD_18K", "طلای ۱۸": "IR_GOLD_18K", "طلا ۱۸": "IR_GOLD_18K",
+    "بیت کوین": "BTC", "بیتکوین": "BTC", "اتریوم": "ETH", "تتر": "USDT",
+    "دوج کوین": "DOGE", "بایننس": "BNB",
 }
-DEFAULT_GOLD_KEYS = ["usd", "eur", "gold18"]
+MARKET_QUERY_ALIASES_NORMALIZED = {_normalize_coin_query(k): v for k, v in MARKET_QUERY_ALIASES.items()}
+
+DEFAULT_MARKET_SYMBOLS = ["USD", "EUR", "IR_GOLD_18K"]
 
 
-def get_iran_gold_currency(keys):
-    url = f"https://api.tala.ir/v1/rates/{','.join(keys)}"
+def fetch_market_data():
+    """درخواست واقعی به BrsApi و به‌روزرسانی کش. این تابع رو فقط ترد پس‌زمینه (هر ۳ دقیقه) یا در صورت خالی بودن کش صدا بزن."""
+    if not BRSAPI_KEY:
+        return False, "متغیر BRSAPI_KEY در Render تنظیم نشده است."
     try:
-        response = requests.get(url, timeout=15)
-    except Exception as e:
-        return None, f"خطای ارتباطی: {str(e)}"
-
-    if response.status_code != 200:
-        print(f"api.tala.ir error — status={response.status_code}, body={response.text[:300]}")
-        return None, f"کد {response.status_code} — {response.text[:300]}"
-
-    try:
+        response = requests.get(BRSAPI_URL, params={"key": BRSAPI_KEY}, timeout=20)
+        if response.status_code != 200:
+            print(f"BrsApi fetch failed — status={response.status_code}, body={response.text[:300]}")
+            return False, f"کد {response.status_code}"
         data = response.json()
+        with MARKET_CACHE_LOCK:
+            MARKET_CACHE["data"] = data
+            MARKET_CACHE["last_updated"] = time.time()
+        return True, None
     except Exception as e:
-        return None, f"خطا در پردازش پاسخ: {str(e)} — {response.text[:300]}"
-
-    if not data.get("success"):
-        return None, f"پاسخ ناموفق از سرویس: {str(data)[:300]}"
-
-    return data.get("rates", []), None
+        print(f"BrsApi fetch error: {e}")
+        return False, str(e)
 
 
-def format_gold_currency_rates(rates):
-    if not rates:
-        return "❌ داده‌ای دریافت نشد."
+def market_cache_updater_loop():
+    while True:
+        fetch_market_data()
+        time.sleep(MARKET_CACHE_REFRESH_SECONDS)
+
+
+def find_market_item(query):
+    normalized = _normalize_coin_query(query)
+    symbol_query = MARKET_QUERY_ALIASES_NORMALIZED.get(normalized, query.strip().upper())
+
+    with MARKET_CACHE_LOCK:
+        data = MARKET_CACHE.get("data")
+
+    # اگه کش هنوز پر نشده (مثلاً بلافاصله بعد از روشن شدن سرویس)، یک‌بار به‌صورت آنی امتحان کن
+    if not data:
+        ok, _ = fetch_market_data()
+        if ok:
+            with MARKET_CACHE_LOCK:
+                data = MARKET_CACHE.get("data")
+
+    if not data:
+        return None
+
+    for category in ("gold", "currency", "cryptocurrency"):
+        for item in data.get(category, []):
+            if _normalize_coin_query(item.get("symbol", "")) == _normalize_coin_query(symbol_query):
+                return item
+            if normalized in (_normalize_coin_query(item.get("name", "")), _normalize_coin_query(item.get("name_en", ""))):
+                return item
+    return None
+
+
+def format_market_item(item):
+    name = item.get("name", item.get("symbol", "؟"))
+    unit = item.get("unit", "")
+    price = item.get("price")
+    change = item.get("change_percent")
+
+    try:
+        price_num = float(price)
+        price_display = f"{price_num:,.0f}" if unit == "تومان" else f"{price_num:,.4f}"
+    except (TypeError, ValueError):
+        price_display = str(price)
+
+    line = f"💰 {name}\n💵 قیمت: {price_display} {unit}".rstrip()
+    if change is not None:
+        arrow = "📈" if change >= 0 else "📉"
+        line += f"\n{arrow} تغییر: {change}%"
+    return line
+
+
+def get_market_price_text(query):
+    item = find_market_item(query)
+    if item is None:
+        if not BRSAPI_KEY:
+            return "❌ سرویس قیمت هنوز تنظیم نشده (نیاز به BRSAPI_KEY در Render)."
+        return f"❌ چیزی با نام «{query}» پیدا نشد. اسم دقیق‌تر (مثل دلار، یورو، بیت‌کوین) رو امتحان کن."
+    return format_market_item(item)
+
+
+def get_default_market_bundle_text():
     lines = []
-    for r in rates:
-        title = r.get("title", r.get("key", "؟"))
-        value = r.get("value")
-        unit = r.get("unit", "")
-        status = r.get("status")
-        if status != "ok" or value is None:
-            lines.append(f"⚠️ {title}: در دسترس نیست")
-        else:
-            lines.append(f"💰 {title}: {value:,.0f} {unit}")
-    return "\n".join(lines)
+    for symbol in DEFAULT_MARKET_SYMBOLS:
+        item = find_market_item(symbol)
+        if item:
+            lines.append(format_market_item(item))
+    if not lines:
+        if not BRSAPI_KEY:
+            return "❌ سرویس قیمت هنوز تنظیم نشده (نیاز به BRSAPI_KEY در Render)."
+        return "❌ داده‌ای دریافت نشد. چند لحظه دیگه دوباره امتحان کن."
+    return "\n\n".join(lines)
 
 
 def clean_text(text):
@@ -1390,15 +1409,11 @@ def handle_gold_button(message):
     set_mode(chat_id, "gold")
     bot.send_chat_action(chat_id, "typing")
 
-    rates, error = get_iran_gold_currency(DEFAULT_GOLD_KEYS)
-    if rates:
-        reply = format_gold_currency_rates(rates)
-    else:
-        reply = f"❌ خطا در دریافت قیمت.\nجزئیات: {error}"
+    reply = get_default_market_bundle_text()
 
     bot.send_message(
         chat_id,
-        reply + "\n\nمی‌تونی «دلار»، «یورو»، یا «طلا» رو هم جدا بپرسی.\nبرای خروج، دکمه‌ی «پایان دلار و طلا» رو بزن.",
+        reply + "\n\nمی‌تونی «دلار»، «یورو»، «طلا»، «بیت‌کوین» و... رو هم جدا بپرسی.\nبرای خروج، دکمه‌ی «پایان دلار و طلا» رو بزن.",
         reply_markup=gold_active_keyboard()
     )
 
@@ -1740,7 +1755,7 @@ def handle_message(message):
     elif mode == "crypto":
         try:
             bot.send_chat_action(chat_id, "typing")
-            reply = get_crypto_price(message.text.strip())
+            reply = get_market_price_text(message.text.strip())
             bot.send_message(chat_id, reply, reply_markup=crypto_active_keyboard())
         except Exception as e:
             bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=crypto_active_keyboard())
@@ -1748,10 +1763,7 @@ def handle_message(message):
     elif mode == "gold":
         try:
             bot.send_chat_action(chat_id, "typing")
-            normalized_query = message.text.strip().lower()
-            key = GOLD_KEY_ALIASES.get(normalized_query, normalized_query)
-            rates, error = get_iran_gold_currency([key])
-            reply = format_gold_currency_rates(rates) if rates else f"❌ خطا در دریافت قیمت.\nجزئیات: {error}"
+            reply = get_market_price_text(message.text.strip())
             bot.send_message(chat_id, reply, reply_markup=gold_active_keyboard())
         except Exception as e:
             bot.send_message(chat_id, f"❌ خطا: {str(e)}", reply_markup=gold_active_keyboard())
@@ -1809,6 +1821,13 @@ if __name__ == "__main__":
 
     bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
     bot_thread.start()
+
+    # ترد پس‌زمینه: هر ۳ دقیقه قیمت طلا/ارز/کریپتو رو یک‌بار برای همه‌ی کاربرا به‌روز می‌کنه
+    if BRSAPI_KEY:
+        market_thread = threading.Thread(target=market_cache_updater_loop, daemon=True)
+        market_thread.start()
+    else:
+        print("BRSAPI_KEY تنظیم نشده — قابلیت دلار/طلا/کریپتو غیرفعال می‌مونه تا وقتی اضافه بشه.")
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
