@@ -28,7 +28,15 @@ JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()      # برای خوا
 POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()  # لازم برای مدل kontext (ساخت عکس بر اساس عکس مرجع)
 BRSAPI_KEY = os.environ.get("BRSAPI_KEY", "").strip()  # برای قیمت طلا/ارز/کریپتو ایران (رایگان از BrsApi.ir)
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# کلی‌کچر خطا: اگه توی پردازش هر پیامی خطای پیش‌بینی‌نشده‌ای رخ بده، به‌جای متوقف شدن
+# کل ربات، فقط لاگ می‌شه و ربات به کارش ادامه می‌ده.
+class BotExceptionHandler(telebot.ExceptionHandler):
+    def handle(self, exception):
+        print(f"⚠️ خطای پیش‌بینی‌نشده در پردازش پیام: {exception}")
+        return True  # جلوگیری از متوقف شدن کل حلقه‌ی polling
+
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN, exception_handler=BotExceptionHandler())
 app = Flask(__name__)
 
 # مدل گفتگوی عادی (پیش‌فرض، اگه کاربر مدلی انتخاب نکرده باشه)
@@ -1075,6 +1083,18 @@ def handle_reset(message):
     bot.reply_to(message, "✅ حافظه مکالمه پاک شد.")
 
 
+# ۶ب. دستور /menu — دکمه‌ی فرار اضطراری؛ همیشه کار می‌کنه، مهم نیست کاربر توی چه حالتی گیر کرده باشه
+@bot.message_handler(commands=['menu'])
+def handle_menu_command(message):
+    chat_id = message.chat.id
+    set_mode(chat_id, None)
+    bot.send_message(
+        chat_id,
+        "🔄 به منوی اصلی برگشتی. از منوی زیر یکی رو انتخاب کن 👇",
+        reply_markup=main_menu_keyboard()
+    )
+
+
 # ۷. دکمه «شروع گفتگو» — منوی انتخاب مدل رو با کیبورد پایین صفحه نشون می‌ده
 @bot.message_handler(func=lambda message: message.text == BTN_START_CHAT)
 def handle_start_chat_button(message):
@@ -1834,6 +1854,7 @@ if __name__ == "__main__":
     try:
         bot.set_my_commands([
             types.BotCommand("start", "نمایش منوی اصلی ربات"),
+            types.BotCommand("menu", "برگشت فوری به منوی اصلی (در هر حالتی)"),
             types.BotCommand("reset", "پاک کردن حافظه مکالمه"),
         ])
     except Exception as e:
